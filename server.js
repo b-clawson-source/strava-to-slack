@@ -99,7 +99,7 @@ app.get("/", (req, res) => {
             id="slackId"
             name="slackId"
             placeholder="U04HBADQP0B"
-            pattern="U[A-Z0-9]{10,}"
+            pattern="U[A-Z0-9]{8,}"
             required
           />
           <button type="submit" id="submitBtn">Connect Strava Account</button>
