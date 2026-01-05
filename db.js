@@ -27,6 +27,8 @@ if (usePostgres) {
       athlete_firstname TEXT,
       athlete_lastname TEXT,
       slack_user_id TEXT,
+      verified BOOLEAN DEFAULT FALSE,
+      verification_token TEXT,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -54,6 +56,8 @@ if (usePostgres) {
         athlete_firstname TEXT,
         athlete_lastname TEXT,
         slack_user_id TEXT,
+        verified INTEGER DEFAULT 0,
+        verification_token TEXT,
         updated_at TEXT DEFAULT (datetime('now'))
       )
     `);
@@ -76,12 +80,13 @@ export async function upsertConnection({
   athlete_firstname,
   athlete_lastname,
   slack_user_id,
+  verification_token,
 }) {
   if (usePostgres) {
     const query = `
       INSERT INTO strava_connections
-        (athlete_id, refresh_token, access_token, expires_at, athlete_firstname, athlete_lastname, slack_user_id, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+        (athlete_id, refresh_token, access_token, expires_at, athlete_firstname, athlete_lastname, slack_user_id, verification_token, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
       ON CONFLICT(athlete_id) DO UPDATE SET
         refresh_token=$2,
         access_token=$3,
@@ -89,6 +94,7 @@ export async function upsertConnection({
         athlete_firstname=$5,
         athlete_lastname=$6,
         slack_user_id=COALESCE($7, strava_connections.slack_user_id),
+        verification_token=COALESCE($8, strava_connections.verification_token),
         updated_at=CURRENT_TIMESTAMP
     `;
     await pool.query(query, [
@@ -99,14 +105,15 @@ export async function upsertConnection({
       athlete_firstname,
       athlete_lastname,
       slack_user_id,
+      verification_token,
     ]);
   } else {
     return new Promise((resolve, reject) => {
       db.run(
         `
         INSERT INTO strava_connections
-          (athlete_id, refresh_token, access_token, expires_at, athlete_firstname, athlete_lastname, slack_user_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          (athlete_id, refresh_token, access_token, expires_at, athlete_firstname, athlete_lastname, slack_user_id, verification_token, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(athlete_id) DO UPDATE SET
           refresh_token=excluded.refresh_token,
           access_token=excluded.access_token,
@@ -114,6 +121,7 @@ export async function upsertConnection({
           athlete_firstname=excluded.athlete_firstname,
           athlete_lastname=excluded.athlete_lastname,
           slack_user_id=COALESCE(excluded.slack_user_id, slack_user_id),
+          verification_token=COALESCE(excluded.verification_token, verification_token),
           updated_at=datetime('now')
         `,
         [
@@ -124,6 +132,7 @@ export async function upsertConnection({
           athlete_firstname,
           athlete_lastname,
           slack_user_id,
+          verification_token,
         ],
         (err) => (err ? reject(err) : resolve(true))
       );
@@ -200,6 +209,53 @@ export async function wasActivityPosted(activity_id) {
         `SELECT activity_id FROM posted_activities WHERE activity_id = ?`,
         [activity_id],
         (err, row) => (err ? reject(err) : resolve(!!row))
+      );
+    });
+  }
+}
+
+export async function verifySlackUser(verification_token) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `UPDATE strava_connections SET verified = TRUE, verification_token = NULL WHERE verification_token = $1 RETURNING athlete_id`,
+      [verification_token]
+    );
+    return result.rows.length > 0 ? result.rows[0] : null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `UPDATE strava_connections SET verified = 1, verification_token = NULL WHERE verification_token = ?`,
+        [verification_token],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes > 0) {
+            db.get(
+              `SELECT athlete_id FROM strava_connections WHERE verified = 1 ORDER BY updated_at DESC LIMIT 1`,
+              [],
+              (err, row) => (err ? reject(err) : resolve(row))
+            );
+          } else {
+            resolve(null);
+          }
+        }
+      );
+    });
+  }
+}
+
+export async function getConnectionByVerificationToken(token) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT * FROM strava_connections WHERE verification_token = $1`,
+      [token]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM strava_connections WHERE verification_token = ?`,
+        [token],
+        (err, row) => (err ? reject(err) : resolve(row || null))
       );
     });
   }

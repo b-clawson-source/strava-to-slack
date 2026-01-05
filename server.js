@@ -9,10 +9,35 @@ import {
   getConnection,
   wasActivityPosted,
   markActivityPosted,
+  verifySlackUser,
+  getConnectionByVerificationToken,
 } from "./db.js";
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
+
+// Admin authentication middleware
+function requireAdminAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const adminToken = process.env.ADMIN_TOKEN;
+
+  if (!adminToken) {
+    // If ADMIN_TOKEN is not set, allow access (backward compatibility)
+    return next();
+  }
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ ok: false, error: "Missing or invalid Authorization header" });
+  }
+
+  const token = authHeader.substring(7);
+  if (token !== adminToken) {
+    return res.status(403).json({ ok: false, error: "Invalid admin token" });
+  }
+
+  next();
+}
 
 app.get("/", (req, res) => {
   res.send(`
@@ -123,7 +148,7 @@ app.get("/", (req, res) => {
 /**
  * TEST: Slack post with pedometer format (sends to DM)
  */
-app.post("/test/slack", async (req, res) => {
+app.post("/test/slack", requireAdminAuth, async (req, res) => {
   try {
     const token = process.env.SLACK_BOT_TOKEN;
     const mySlackUserId = process.env.MY_SLACK_USER_ID;
@@ -167,7 +192,7 @@ app.post("/test/slack", async (req, res) => {
  * Sends to your DM instead of the channel
  * Usage: POST /test/map-dm { "activity_id": "12345678", "athlete_id": 19826530 }
  */
-app.post("/test/map-dm", async (req, res) => {
+app.post("/test/map-dm", requireAdminAuth, async (req, res) => {
   try {
     const { activity_id, athlete_id } = req.body;
     if (!activity_id) {
@@ -545,6 +570,10 @@ app.get("/auth/strava/callback", async (req, res) => {
     }
 
     const athlete = tokenData.athlete;
+
+    // Generate verification token if Slack user ID is provided
+    const verificationToken = slackUserId ? crypto.randomBytes(32).toString("hex") : null;
+
     await upsertConnection({
       athlete_id: athlete.id,
       refresh_token: tokenData.refresh_token,
@@ -553,11 +582,39 @@ app.get("/auth/strava/callback", async (req, res) => {
       athlete_firstname: athlete.firstname,
       athlete_lastname: athlete.lastname,
       slack_user_id: slackUserId,
+      verification_token: verificationToken,
     });
 
-    const slackMsg = slackUserId
-      ? `Your Slack account (<@${slackUserId}>) will be mentioned in activity posts.`
-      : `Note: No Slack account linked. Visit the homepage to set up your Slack ID.`;
+    // Send verification DM if Slack user ID is provided
+    let slackMsg;
+    if (slackUserId && verificationToken) {
+      const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const verifyUrl = `${baseUrl}/verify/${verificationToken}`;
+
+      try {
+        const token = process.env.SLACK_BOT_TOKEN;
+        const dmText = `Hi! You've connected your Strava account to the running tracker.\n\n` +
+          `To complete setup and start auto-posting your runs, please click this link to verify your Slack account:\n\n` +
+          `${verifyUrl}\n\n` +
+          `(If you didn't request this, you can ignore this message.)`;
+
+        await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({ channel: slackUserId, text: dmText }),
+        });
+
+        slackMsg = `Check your Slack DMs! We've sent you a verification link to confirm your account.`;
+      } catch (err) {
+        console.error("Failed to send verification DM:", err);
+        slackMsg = `Connected, but failed to send verification DM. Please contact an admin.`;
+      }
+    } else {
+      slackMsg = `Note: No Slack account linked. Visit the homepage to set up your Slack ID.`;
+    }
 
     res.send(
       `Connected! ✅\n\nAthlete: ${athlete.firstname} ${athlete.lastname} (id ${athlete.id}).\n\n${slackMsg}\n\nYou can close this tab.`
@@ -569,9 +626,44 @@ app.get("/auth/strava/callback", async (req, res) => {
 });
 
 /**
+ * Verification endpoint
+ * Users click this link from their Slack DM to verify their account
+ */
+app.get("/verify/:token", async (req, res) => {
+  try {
+    const token = req.params.token;
+
+    // Get connection by verification token
+    const conn = await getConnectionByVerificationToken(token);
+
+    if (!conn) {
+      return res.status(404).send(
+        `Verification failed: Invalid or expired verification link.`
+      );
+    }
+
+    // Verify the user
+    await verifySlackUser(token);
+
+    const athleteName = `${conn.athlete_firstname || ""} ${conn.athlete_lastname || ""}`.trim();
+
+    res.send(
+      `✅ Verified!\n\n` +
+      `Your Slack account is now verified. Your runs will be automatically posted to the channel.\n\n` +
+      `Athlete: ${athleteName}\n` +
+      `Slack ID: ${conn.slack_user_id}\n\n` +
+      `You can close this tab and start running! 🏃`
+    );
+  } catch (err) {
+    console.error("Verification error:", err);
+    res.status(500).send(`Verification error: ${err.message}`);
+  }
+});
+
+/**
  * Admin-ish: List who has connected
  */
-app.get("/connections", async (req, res) => {
+app.get("/connections", requireAdminAuth, async (req, res) => {
   const rows = await listConnections();
   res.json({ ok: true, connections: rows });
 });
@@ -581,7 +673,7 @@ app.get("/connections", async (req, res) => {
  * POST /connections/:athlete_id/slack
  * Body: { "slack_user_id": "U04HBADQP0B" }
  */
-app.post("/connections/:athlete_id/slack", async (req, res) => {
+app.post("/connections/:athlete_id/slack", requireAdminAuth, async (req, res) => {
   try {
     const athleteId = parseInt(req.params.athlete_id, 10);
     const { slack_user_id } = req.body;
@@ -647,6 +739,12 @@ app.post("/strava/webhook", async (req, res) => {
     const conn = await getConnection(athleteId);
     if (!conn) {
       console.log(`No connection found for athlete_id=${athleteId}. Skipping.`);
+      return;
+    }
+
+    // Check if user has verified their Slack account
+    if (conn.slack_user_id && !conn.verified) {
+      console.log(`User ${athleteId} has not verified their Slack account yet. Skipping.`);
       return;
     }
 
