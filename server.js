@@ -661,6 +661,32 @@ app.get("/verify/:token", async (req, res) => {
 });
 
 /**
+ * DEBUG: Check your connection status (temporary endpoint)
+ */
+app.get("/debug/my-connection", async (req, res) => {
+  try {
+    const athleteId = 19826530; // Your athlete ID
+    const conn = await getConnection(athleteId);
+
+    if (!conn) {
+      return res.json({ ok: false, error: "No connection found" });
+    }
+
+    res.json({
+      ok: true,
+      athlete_id: conn.athlete_id,
+      athlete_name: `${conn.athlete_firstname} ${conn.athlete_lastname}`,
+      slack_user_id: conn.slack_user_id,
+      verified: conn.verified,
+      has_verification_token: !!conn.verification_token,
+      updated_at: conn.updated_at,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * Admin-ish: List who has connected
  */
 app.get("/connections", requireAdminAuth, async (req, res) => {
