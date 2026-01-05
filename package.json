@@ -7,7 +7,11 @@
     "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["strava", "slack", "webhook"],
+  "keywords": [
+    "strava",
+    "slack",
+    "webhook"
+  ],
   "author": "",
   "license": "ISC",
   "engines": {
@@ -20,6 +24,7 @@
     "express": "^5.2.1",
     "form-data": "^4.0.5",
     "node-fetch": "^3.3.2",
+    "pg": "^8.16.3",
     "sqlite3": "^5.1.7"
   }
 }
