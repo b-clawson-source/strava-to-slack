@@ -461,12 +461,14 @@ async function slackPostActivityWithMap(activity, conn) {
   const title = activity.name || "New Run";
   const stravaUrl = `https://www.strava.com/activities/${activity.id}`;
 
-  // Include Slack user mention if mapped
-  const userMention = conn.slack_user_id ? `<@${conn.slack_user_id}> ` : "";
+  // Use Slack mention if available, otherwise fall back to Strava name
+  const displayName = conn.slack_user_id
+    ? `<@${conn.slack_user_id}>`
+    : `*${athleteName}*`;
 
   const text =
     `${distanceLine} 🏃\n` +
-    `${userMention}*${athleteName}*: ${title}\n` +
+    `${displayName}: ${title}\n` +
     `${stravaUrl}`;
 
   return await slackPostMessage(text);
