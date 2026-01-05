@@ -40,6 +40,19 @@ if (usePostgres) {
       posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Migration: Add verified and verification_token columns if they don't exist
+  try {
+    await pool.query(`
+      ALTER TABLE strava_connections
+      ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS verification_token TEXT
+    `);
+    console.log("Database migration: Added verified and verification_token columns");
+  } catch (err) {
+    // Columns might already exist, ignore error
+    console.log("Database migration check:", err.message);
+  }
 } else {
   console.log("Using SQLite database");
   const dbPath = path.resolve(process.cwd(), "data.sqlite");
@@ -69,6 +82,27 @@ if (usePostgres) {
         posted_at TEXT DEFAULT (datetime('now'))
       )
     `);
+
+    // Migration: Add verified and verification_token columns if they don't exist
+    db.run(`
+      ALTER TABLE strava_connections ADD COLUMN verified INTEGER DEFAULT 0
+    `, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.error("Migration error (verified):", err.message);
+      } else if (!err) {
+        console.log("Database migration: Added verified column");
+      }
+    });
+
+    db.run(`
+      ALTER TABLE strava_connections ADD COLUMN verification_token TEXT
+    `, (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.error("Migration error (verification_token):", err.message);
+      } else if (!err) {
+        console.log("Database migration: Added verification_token column");
+      }
+    });
   });
 }
 
