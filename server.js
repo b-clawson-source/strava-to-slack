@@ -513,6 +513,7 @@ app.get("/auth/strava/callback", async (req, res) => {
         .send("Missing STRAVA_CLIENT_ID or STRAVA_CLIENT_SECRET in .env");
     }
 
+    const redirect_uri = process.env.STRAVA_REDIRECT_URI;
     const tokenResp = await fetch("https://www.strava.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -521,6 +522,7 @@ app.get("/auth/strava/callback", async (req, res) => {
         client_secret,
         code,
         grant_type: "authorization_code",
+        redirect_uri,
       }),
     });
 
