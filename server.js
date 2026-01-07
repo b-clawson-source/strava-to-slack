@@ -772,9 +772,12 @@ app.get("/verify/:token", async (req, res) => {
  */
 app.post("/verify/slack/start", async (req, res) => {
   try {
+    console.log("Verify slack start - body:", req.body);
     const slackUserId = req.body.slack_user_id;
+    console.log("Slack user ID:", slackUserId);
 
     if (!slackUserId || !slackUserId.match(/^U[A-Za-z0-9]{8,}$/)) {
+      console.log("Validation failed for:", slackUserId);
       return res.status(400).send(`
         <!DOCTYPE html>
         <html>
