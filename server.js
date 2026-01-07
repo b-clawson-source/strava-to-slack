@@ -57,189 +57,236 @@ function requireAdminAuth(req, res, next) {
   next();
 }
 
+// Shared CSS styles for consistent look across all pages
+const sharedStyles = `
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 40px 20px;
+    line-height: 1.6;
+    color: #1a1a2e;
+    background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%);
+    min-height: 100vh;
+  }
+  .container {
+    background: white;
+    border-radius: 16px;
+    padding: 40px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  }
+  h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin: 0 0 8px 0;
+    color: #1a1a2e;
+  }
+  .subtitle {
+    color: #6b7280;
+    font-size: 1.1rem;
+    margin: 0 0 32px 0;
+  }
+  h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin: 0 0 12px 0;
+    color: #1a1a2e;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .card {
+    background: #fafafa;
+    padding: 24px;
+    border-radius: 12px;
+    margin: 20px 0;
+    border: 1px solid #e5e7eb;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  }
+  .card p { color: #6b7280; margin: 0 0 16px 0; font-size: 0.95rem; }
+  .card.strava { border-left: 4px solid #FC4C02; }
+  .card.peloton { border-left: 4px solid #DF1C2F; }
+  .card.verify { border-left: 4px solid #3b82f6; background: #eff6ff; }
+  input[type="text"], input[type="password"], input[type="email"] {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 16px;
+    border: 2px solid #e5e7eb;
+    border-radius: 10px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    background: white;
+  }
+  input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+  }
+  label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #374151;
+  }
+  button {
+    color: white;
+    padding: 14px 24px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 16px;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  button:active { transform: translateY(0); }
+  .btn-verify { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
+  .btn-strava { background: linear-gradient(135deg, #FC4C02 0%, #e34402 100%); }
+  .btn-peloton { background: linear-gradient(135deg, #DF1C2F 0%, #b8182a 100%); }
+  .btn-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #3b82f6;
+    text-decoration: none;
+    font-weight: 500;
+    margin-top: 24px;
+    font-size: 0.95rem;
+  }
+  .btn-back:hover { text-decoration: underline; }
+  .instructions {
+    background: #eff6ff;
+    padding: 20px;
+    border-radius: 12px;
+    margin: 24px 0;
+    border: 1px solid #bfdbfe;
+  }
+  .instructions strong { color: #1e40af; }
+  .instructions ol { margin: 12px 0; padding-left: 20px; color: #374151; }
+  .instructions li { margin: 6px 0; }
+  code {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-family: "SF Mono", Monaco, monospace;
+    font-size: 0.9em;
+  }
+  .step-badge {
+    background: #1a1a2e;
+    color: white;
+    border-radius: 8px;
+    min-width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .note {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin-top: 12px;
+    padding-left: 12px;
+    border-left: 2px solid #e5e7eb;
+  }
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #e5e7eb, transparent);
+    margin: 32px 0;
+  }
+  .section-label {
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #9ca3af;
+    margin-bottom: 16px;
+  }
+`;
+
 app.get("/", (req, res) => {
   res.send(`
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-      <title>Fitness to Slack - Setup</title>
+      <title>Fitness to Slack</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          max-width: 700px;
-          margin: 50px auto;
-          padding: 20px;
-          line-height: 1.6;
-        }
-        h1 { color: #333; }
-        h2 { color: #555; margin-top: 0; }
-        .card {
-          background: #f5f5f5;
-          padding: 20px;
-          border-radius: 8px;
-          margin: 20px 0;
-        }
-        .card.strava { border-left: 4px solid #FC4C02; }
-        .card.peloton { border-left: 4px solid #DF1C2F; }
-        .card.verify { border-left: 4px solid #2196F3; }
-        input {
-          width: 100%;
-          padding: 10px;
-          font-size: 16px;
-          border: 2px solid #ddd;
-          border-radius: 4px;
-          box-sizing: border-box;
-        }
-        label {
-          display: block;
-          margin-top: 10px;
-          font-weight: bold;
-        }
-        button {
-          color: white;
-          padding: 12px 24px;
-          font-size: 16px;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          width: 100%;
-          margin-top: 15px;
-        }
-        button:disabled {
-          background: #ccc;
-          cursor: not-allowed;
-        }
-        .btn-verify { background: #2196F3; }
-        .btn-verify:hover { background: #1976D2; }
-        .btn-strava { background: #FC4C02; }
-        .btn-strava:hover { background: #E34402; }
-        .btn-peloton { background: #DF1C2F; }
-        .btn-peloton:hover { background: #b8182a; }
-        .instructions {
-          background: #e8f4fd;
-          padding: 15px;
-          border-left: 4px solid #2196F3;
-          margin: 20px 0;
-        }
-        .instructions ol { margin: 10px 0; padding-left: 20px; }
-        code {
-          background: #333;
-          color: #fff;
-          padding: 2px 6px;
-          border-radius: 3px;
-          font-family: monospace;
-        }
-        .step-number {
-          background: #333;
-          color: white;
-          border-radius: 50%;
-          width: 24px;
-          height: 24px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 14px;
-          margin-right: 8px;
-        }
-        .note {
-          font-size: 12px;
-          color: #666;
-          margin-top: 10px;
-        }
-        .divider {
-          border-top: 1px solid #ddd;
-          margin: 30px 0;
-        }
-      </style>
+      <meta charset="utf-8">
+      <style>${sharedStyles}</style>
     </head>
     <body>
-      <h1>🏃 Fitness to Slack</h1>
-      <p>Connect your Strava or Peloton account to automatically post your workouts to Slack.</p>
+      <div class="container">
+        <h1>Fitness to Slack</h1>
+        <p class="subtitle">Automatically share your workouts with your team</p>
 
-      <div class="instructions">
-        <strong>First, get your Slack Member ID:</strong>
-        <ol>
-          <li>Open Slack and click on your profile picture</li>
-          <li>Click "View profile"</li>
-          <li>Click the ⋯ (three dots) menu</li>
-          <li>Click "Copy member ID"</li>
-        </ol>
-        <p>Your Slack ID will look like: <code>U04HBADQP0B</code></p>
-      </div>
+        <div class="instructions">
+          <strong>First, find your Slack Member ID:</strong>
+          <ol>
+            <li>Open Slack and click your profile picture</li>
+            <li>Click <strong>Profile</strong></li>
+            <li>Click the <strong>⋯</strong> menu → <strong>Copy member ID</strong></li>
+          </ol>
+          <p style="margin:12px 0 0 0;color:#374151;">It looks like: <code>U04HBADQP0B</code></p>
+        </div>
 
-      <!-- Step 1: Verify Slack -->
-      <div class="card verify">
-        <h2><span class="step-number">1</span> Verify Your Slack Account</h2>
-        <p>Before connecting any fitness service, verify your Slack account. We'll send you a DM with a verification link.</p>
-        <form id="verifyForm" action="/verify/slack/start" method="POST">
-          <label for="verifySlackId">Your Slack Member ID:</label>
-          <input
-            type="text"
-            id="verifySlackId"
-            name="slack_user_id"
-            placeholder="U04HBADQP0B"
-            pattern="U[A-Za-z0-9]{8,}"
-            required
-          />
-          <button type="submit" class="btn-verify">Send Verification Link</button>
-        </form>
-      </div>
+        <div class="section-label">Step 1</div>
+        <div class="card verify">
+          <h2><span class="step-badge">1</span> Verify Your Slack</h2>
+          <p>We'll send a verification link to your Slack DMs.</p>
+          <form id="verifyForm" action="/verify/slack/start" method="POST">
+            <label for="verifySlackId">Slack Member ID</label>
+            <input type="text" id="verifySlackId" name="slack_user_id" placeholder="U04HBADQP0B" pattern="U[A-Za-z0-9]{8,}" required />
+            <button type="submit" class="btn-verify">Send Verification Link</button>
+          </form>
+        </div>
 
-      <div class="divider"></div>
+        <div class="divider"></div>
+        <div class="section-label">Step 2 — Connect a service</div>
 
-      <!-- Step 2a: Connect Strava -->
-      <div class="card strava">
-        <h2><span class="step-number">2a</span> Connect Strava</h2>
-        <p>Once verified, connect your Strava account to auto-post your runs.</p>
-        <form id="stravaForm">
-          <label for="stravaSlackId">Your Slack Member ID:</label>
-          <input
-            type="text"
-            id="stravaSlackId"
-            name="slackId"
-            placeholder="U04HBADQP0B"
-            pattern="U[A-Za-z0-9]{8,}"
-            required
-          />
-          <button type="submit" class="btn-strava">Connect Strava Account</button>
-        </form>
-      </div>
+        <div class="card strava">
+          <h2><span class="step-badge">2a</span> Connect Strava</h2>
+          <p>Auto-post your runs to Slack in real-time.</p>
+          <form id="stravaForm">
+            <label for="stravaSlackId">Slack Member ID</label>
+            <input type="text" id="stravaSlackId" name="slackId" placeholder="U04HBADQP0B" pattern="U[A-Za-z0-9]{8,}" required />
+            <button type="submit" class="btn-strava">Connect Strava</button>
+          </form>
+        </div>
 
-      <!-- Step 2b: Connect Peloton -->
-      <div class="card peloton">
-        <h2><span class="step-number">2b</span> Connect Peloton</h2>
-        <p>Once verified, connect your Peloton account to auto-post workouts with distance (running, cycling, walking).</p>
-        <form id="pelotonForm">
-          <label for="pelotonSlackId">Your Slack Member ID:</label>
-          <input
-            type="text"
-            id="pelotonSlackId"
-            name="slackId"
-            placeholder="U04HBADQP0B"
-            pattern="U[A-Za-z0-9]{8,}"
-            required
-          />
-          <button type="submit" class="btn-peloton">Connect Peloton Account</button>
-        </form>
-        <p class="note">You'll enter your Peloton credentials on the next page. Your password is sent directly to Peloton and never stored.</p>
+        <div class="card peloton">
+          <h2><span class="step-badge">2b</span> Connect Peloton</h2>
+          <p>Auto-post cycling, running, and walking workouts.</p>
+          <form id="pelotonForm">
+            <label for="pelotonSlackId">Slack Member ID</label>
+            <input type="text" id="pelotonSlackId" name="slackId" placeholder="U04HBADQP0B" pattern="U[A-Za-z0-9]{8,}" required />
+            <button type="submit" class="btn-peloton">Connect Peloton</button>
+          </form>
+          <p class="note">Your Peloton password is sent directly to Peloton and never stored.</p>
+        </div>
       </div>
 
       <script>
         document.getElementById('stravaForm').addEventListener('submit', (e) => {
           e.preventDefault();
           const slackId = document.getElementById('stravaSlackId').value.trim();
-          if (slackId) {
-            window.location.href = '/auth/strava/start?slack_user_id=' + encodeURIComponent(slackId);
-          }
+          if (slackId) window.location.href = '/auth/strava/start?slack_user_id=' + encodeURIComponent(slackId);
         });
-
         document.getElementById('pelotonForm').addEventListener('submit', (e) => {
           e.preventDefault();
           const slackId = document.getElementById('pelotonSlackId').value.trim();
-          if (slackId) {
-            window.location.href = '/auth/peloton/start?slack_user_id=' + encodeURIComponent(slackId);
-          }
+          if (slackId) window.location.href = '/auth/peloton/start?slack_user_id=' + encodeURIComponent(slackId);
         });
       </script>
     </body>
@@ -783,12 +830,15 @@ app.post("/verify/slack/start", async (req, res) => {
       console.log("Validation failed for:", slackUserId);
       return res.status(400).send(`
         <!DOCTYPE html>
-        <html>
-        <head><title>Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Invalid Slack ID</h1>
-          <p>Please enter a valid Slack Member ID (starts with U followed by letters/numbers).</p>
-          <a href="/">← Go back</a>
+        <html lang="en">
+        <head><title>Invalid Slack ID</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+        <body>
+          <div class="container" style="text-align:center;">
+            <div style="font-size:3rem;margin-bottom:16px;">⚠️</div>
+            <h1>Invalid Slack ID</h1>
+            <p class="subtitle">Please enter a valid Slack Member ID<br>(starts with U followed by letters/numbers).</p>
+            <a href="/" class="btn-back">← Go back</a>
+          </div>
         </body>
         </html>
       `);
@@ -799,12 +849,15 @@ app.post("/verify/slack/start", async (req, res) => {
     if (existing?.verified) {
       return res.send(`
         <!DOCTYPE html>
-        <html>
-        <head><title>Already Verified</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>✅ Already Verified!</h1>
-          <p>Your Slack account is already verified. You can now connect Strava or Peloton.</p>
-          <a href="/">← Go back to connect services</a>
+        <html lang="en">
+        <head><title>Already Verified</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+        <body>
+          <div class="container" style="text-align:center;">
+            <div style="font-size:4rem;margin-bottom:16px;">✅</div>
+            <h1>Already Verified!</h1>
+            <p class="subtitle">Your Slack account is already verified.<br>You can now connect Strava or Peloton.</p>
+            <a href="/" class="btn-back">← Connect your services</a>
+          </div>
         </body>
         </html>
       `);
@@ -845,13 +898,16 @@ app.post("/verify/slack/start", async (req, res) => {
       console.error("Failed to send verification DM:", dmData.error);
       return res.status(500).send(`
         <!DOCTYPE html>
-        <html>
-        <head><title>Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Failed to send verification</h1>
-          <p>Could not send a DM to that Slack ID. Please check the ID is correct and that you can receive DMs from the bot.</p>
-          <p>Error: ${dmData.error}</p>
-          <a href="/">← Go back</a>
+        <html lang="en">
+        <head><title>Error</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+        <body>
+          <div class="container" style="text-align:center;">
+            <div style="font-size:3rem;margin-bottom:16px;">❌</div>
+            <h1>Couldn't Send DM</h1>
+            <p class="subtitle">We couldn't send a DM to that Slack ID.<br>Please check the ID is correct.</p>
+            <p style="background:#fef2f2;color:#991b1b;padding:12px;border-radius:8px;font-size:0.9rem;">Error: ${dmData.error}</p>
+            <a href="/" class="btn-back">← Go back</a>
+          </div>
         </body>
         </html>
       `);
@@ -859,13 +915,16 @@ app.post("/verify/slack/start", async (req, res) => {
 
     res.send(`
       <!DOCTYPE html>
-      <html>
-      <head><title>Check Your Slack DMs</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>📬 Check Your Slack DMs!</h1>
-        <p>We've sent a verification link to your Slack direct messages.</p>
-        <p>Click the link in that message to verify your account, then come back here to connect Strava or Peloton.</p>
-        <a href="/">← Go back</a>
+      <html lang="en">
+      <head><title>Check Your Slack DMs</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+      <body>
+        <div class="container" style="text-align:center;">
+          <div style="font-size:4rem;margin-bottom:16px;">📬</div>
+          <h1>Check Your Slack DMs!</h1>
+          <p class="subtitle">We've sent a verification link to your Slack direct messages.</p>
+          <p style="color:#374151;">Click the link in that message to verify your account, then come back here to connect Strava or Peloton.</p>
+          <a href="/" class="btn-back">← Back to home</a>
+        </div>
       </body>
       </html>
     `);
@@ -892,13 +951,16 @@ app.get("/verify/slack/:token", async (req, res) => {
       console.log("No user found for token - may already be verified");
       return res.send(`
         <!DOCTYPE html>
-        <html>
-        <head><title>Link Already Used</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Link Already Used</h1>
-          <p>This verification link has already been used or expired.</p>
-          <p><strong>If you've already verified</strong>, you're all set! You can now connect your fitness services.</p>
-          <a href="/" style="display: inline-block; margin-top: 15px; padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px;">← Connect Strava or Peloton</a>
+        <html lang="en">
+        <head><title>Link Already Used</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+        <body>
+          <div class="container" style="text-align:center;">
+            <div style="font-size:4rem;margin-bottom:16px;">🔗</div>
+            <h1>Link Already Used</h1>
+            <p class="subtitle">This verification link has already been used.</p>
+            <p style="color:#374151;"><strong>Already verified?</strong> You're all set! Go ahead and connect your fitness services.</p>
+            <a href="/" style="display:inline-block;margin-top:20px;padding:14px 28px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:white;text-decoration:none;border-radius:10px;font-weight:600;">Connect Strava or Peloton</a>
+          </div>
         </body>
         </html>
       `);
@@ -909,13 +971,16 @@ app.get("/verify/slack/:token", async (req, res) => {
 
     res.send(`
       <!DOCTYPE html>
-      <html>
-      <head><title>Verified!</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>✅ Verified!</h1>
-        <p>Your Slack account <strong>${user.slack_user_id}</strong> is now verified.</p>
-        <p>You can now connect Strava or Peloton to auto-post your workouts.</p>
-        <a href="/">← Connect your fitness services</a>
+      <html lang="en">
+      <head><title>Verified!</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+      <body>
+        <div class="container" style="text-align:center;">
+          <div style="font-size:4rem;margin-bottom:16px;">🎉</div>
+          <h1>You're Verified!</h1>
+          <p class="subtitle">Your Slack account is now verified.</p>
+          <p style="color:#374151;">You can now connect Strava or Peloton to auto-post your workouts.</p>
+          <a href="/" style="display:inline-block;margin-top:20px;padding:14px 28px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:white;text-decoration:none;border-radius:10px;font-weight:600;">Connect Your Services</a>
+        </div>
       </body>
       </html>
     `);
@@ -1136,10 +1201,20 @@ app.get("/auth/peloton/start", async (req, res) => {
     return res.status(400).send(`
       <!DOCTYPE html>
       <html>
-      <head><title>Error</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>Missing Slack ID</h1>
-        <p>Please start from the <a href="/">homepage</a> to connect Peloton.</p>
+      <head>
+        <title>Error</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>${sharedStyles}</style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Missing Slack ID</h1>
+          <p class="subtitle">We couldn't find your Slack ID.</p>
+          <div class="card">
+            <p>Please start from the homepage to connect Peloton.</p>
+          </div>
+          <a href="/" class="btn-back">← Back to homepage</a>
+        </div>
       </body>
       </html>
     `);
@@ -1151,11 +1226,21 @@ app.get("/auth/peloton/start", async (req, res) => {
     return res.status(403).send(`
       <!DOCTYPE html>
       <html>
-      <head><title>Not Verified</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>Slack Not Verified</h1>
-        <p>You must verify your Slack account before connecting Peloton.</p>
-        <p>Please go to the <a href="/">homepage</a> and complete Step 1 first.</p>
+      <head>
+        <title>Not Verified</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>${sharedStyles}</style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Slack Not Verified</h1>
+          <p class="subtitle">One more step before connecting Peloton.</p>
+          <div class="card verify">
+            <p>You must verify your Slack account before connecting Peloton.</p>
+            <p>Please complete <strong>Step 1</strong> on the homepage first.</p>
+          </div>
+          <a href="/" class="btn-back">← Back to homepage</a>
+        </div>
       </body>
       </html>
     `);
@@ -1167,71 +1252,33 @@ app.get("/auth/peloton/start", async (req, res) => {
     <head>
       <title>Connect Peloton</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          max-width: 500px;
-          margin: 50px auto;
-          padding: 20px;
-          line-height: 1.6;
-        }
-        h1 { color: #333; }
-        .card {
-          background: #f5f5f5;
-          padding: 20px;
-          border-radius: 8px;
-          margin: 20px 0;
-        }
-        label {
-          display: block;
-          margin-top: 15px;
-          font-weight: bold;
-        }
-        input {
-          width: 100%;
-          padding: 10px;
-          font-size: 16px;
-          border: 2px solid #ddd;
-          border-radius: 4px;
-          box-sizing: border-box;
-          margin-top: 5px;
-        }
-        button {
-          background: #DF1C2F;
-          color: white;
-          padding: 12px 24px;
-          font-size: 16px;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          width: 100%;
-          margin-top: 20px;
-        }
-        button:hover { background: #b8182a; }
-        .note {
-          font-size: 12px;
-          color: #666;
-          margin-top: 10px;
-        }
-      </style>
+      <style>${sharedStyles}</style>
     </head>
     <body>
-      <h1>🚴 Connect Peloton</h1>
-      <p>Enter your Peloton credentials to auto-post your workouts to Slack.</p>
+      <div class="container">
+        <h1>Connect Peloton</h1>
+        <p class="subtitle">Enter your credentials to auto-post workouts to Slack.</p>
 
-      <div class="card">
-        <form action="/auth/peloton/login" method="POST">
-          <input type="hidden" name="slack_user_id" value="${slackUserId}" />
-          <label for="username">Peloton Username or Email</label>
-          <input type="text" id="username" name="username" required />
-          <label for="password">Peloton Password</label>
-          <input type="password" id="password" name="password" required />
-          <button type="submit">Connect Peloton</button>
-        </form>
-        <p class="note">Your password is sent directly to Peloton and is never stored by this app.</p>
+        <div class="card peloton">
+          <h2><span class="step-badge">🚴</span> Peloton Login</h2>
+          <p>Connect your Peloton account to automatically share your workouts.</p>
+          <form action="/auth/peloton/login" method="POST">
+            <input type="hidden" name="slack_user_id" value="${slackUserId}" />
+            <div style="margin-bottom: 16px;">
+              <label for="username">Peloton Username or Email</label>
+              <input type="text" id="username" name="username" required placeholder="your@email.com" />
+            </div>
+            <div>
+              <label for="password">Peloton Password</label>
+              <input type="password" id="password" name="password" required placeholder="••••••••" />
+            </div>
+            <button type="submit" class="btn-peloton">Connect Peloton</button>
+          </form>
+          <p class="note">Your password is sent directly to Peloton and is never stored by this app.</p>
+        </div>
+
+        <a href="/" class="btn-back">← Back to home</a>
       </div>
-
-      <a href="/">← Back to home</a>
     </body>
     </html>
   `);
@@ -1249,11 +1296,20 @@ app.post("/auth/peloton/login", async (req, res) => {
       return res.status(400).send(`
         <!DOCTYPE html>
         <html>
-        <head><title>Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Missing Fields</h1>
-          <p>Please fill in all fields.</p>
-          <a href="/auth/peloton/start?slack_user_id=${slack_user_id}">← Try again</a>
+        <head>
+          <title>Error</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>${sharedStyles}</style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Missing Fields</h1>
+            <p class="subtitle">Please fill in all required fields.</p>
+            <div class="card">
+              <p>Both username and password are required to connect your Peloton account.</p>
+            </div>
+            <a href="/auth/peloton/start?slack_user_id=${slack_user_id}" class="btn-back">← Try again</a>
+          </div>
         </body>
         </html>
       `);
@@ -1265,11 +1321,21 @@ app.post("/auth/peloton/login", async (req, res) => {
       return res.status(403).send(`
         <!DOCTYPE html>
         <html>
-        <head><title>Not Verified</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Slack Not Verified</h1>
-          <p>Your Slack account must be verified first.</p>
-          <a href="/">← Go back to verify</a>
+        <head>
+          <title>Not Verified</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>${sharedStyles}</style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Slack Not Verified</h1>
+            <p class="subtitle">One more step needed.</p>
+            <div class="card verify">
+              <p>Your Slack account must be verified before connecting Peloton.</p>
+              <p>Please complete Step 1 on the homepage first.</p>
+            </div>
+            <a href="/" class="btn-back">← Back to verify</a>
+          </div>
         </body>
         </html>
       `);
@@ -1291,13 +1357,36 @@ app.post("/auth/peloton/login", async (req, res) => {
     res.send(`
       <!DOCTYPE html>
       <html>
-      <head><title>Connected!</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>✅ Peloton Connected!</h1>
-        <p>Your Peloton account is now linked. Your workouts with distance (running, cycling, walking) will be automatically posted to Slack.</p>
-        <p><strong>Peloton User ID:</strong> ${user_id}</p>
-        <p><strong>Slack ID:</strong> ${slack_user_id}</p>
-        <a href="/">← Back to home</a>
+      <head>
+        <title>Connected!</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>${sharedStyles}
+          .success-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+          }
+          .details {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 10px;
+            padding: 16px;
+            margin: 20px 0;
+          }
+          .details p { margin: 8px 0; color: #166534; }
+        </style>
+      </head>
+      <body>
+        <div class="container" style="text-align: center;">
+          <div class="success-icon">✅</div>
+          <h1>Peloton Connected!</h1>
+          <p class="subtitle">Your account is now linked and ready to go.</p>
+          <div class="details">
+            <p><strong>Peloton User ID:</strong> ${user_id}</p>
+            <p><strong>Slack ID:</strong> ${slack_user_id}</p>
+          </div>
+          <p style="color: #6b7280;">Your workouts with distance (running, cycling, walking) will be automatically posted to Slack.</p>
+          <a href="/" class="btn-back">← Back to home</a>
+        </div>
       </body>
       </html>
     `);
@@ -1307,12 +1396,33 @@ app.post("/auth/peloton/login", async (req, res) => {
     res.status(400).send(`
       <!DOCTYPE html>
       <html>
-      <head><title>Login Failed</title></head>
-      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-        <h1>Peloton Login Failed</h1>
-        <p>${err.message}</p>
-        <p>Please check your username and password.</p>
-        <a href="/auth/peloton/start?slack_user_id=${slackUserId}">← Try again</a>
+      <head>
+        <title>Login Failed</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>${sharedStyles}
+          .error-box {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 10px;
+            padding: 16px;
+            margin: 20px 0;
+            color: #991b1b;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Peloton Login Failed</h1>
+          <p class="subtitle">We couldn't connect to your Peloton account.</p>
+          <div class="error-box">
+            <p><strong>Error:</strong> ${err.message}</p>
+          </div>
+          <div class="card">
+            <p>Please check your username and password and try again.</p>
+            <p class="note">If you use two-factor authentication, make sure to include the code.</p>
+          </div>
+          <a href="/auth/peloton/start?slack_user_id=${slackUserId}" class="btn-back">← Try again</a>
+        </div>
       </body>
       </html>
     `);
