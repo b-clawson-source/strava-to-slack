@@ -41,6 +41,36 @@ if (usePostgres) {
     )
   `);
 
+  // Peloton tables
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS verified_slack_users (
+      slack_user_id TEXT PRIMARY KEY,
+      verified BOOLEAN DEFAULT FALSE,
+      verification_token TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS peloton_connections (
+      peloton_user_id TEXT PRIMARY KEY,
+      slack_user_id TEXT NOT NULL,
+      session_id TEXT,
+      username TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS posted_peloton_workouts (
+      workout_id TEXT PRIMARY KEY,
+      slack_user_id TEXT,
+      posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Migration: Add verified and verification_token columns if they don't exist
   try {
     await pool.query(`
@@ -79,6 +109,36 @@ if (usePostgres) {
       CREATE TABLE IF NOT EXISTS posted_activities (
         activity_id INTEGER PRIMARY KEY,
         athlete_id INTEGER,
+        posted_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    // Peloton tables
+    db.run(`
+      CREATE TABLE IF NOT EXISTS verified_slack_users (
+        slack_user_id TEXT PRIMARY KEY,
+        verified INTEGER DEFAULT 0,
+        verification_token TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS peloton_connections (
+        peloton_user_id TEXT PRIMARY KEY,
+        slack_user_id TEXT NOT NULL,
+        session_id TEXT,
+        username TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS posted_peloton_workouts (
+        workout_id TEXT PRIMARY KEY,
+        slack_user_id TEXT,
         posted_at TEXT DEFAULT (datetime('now'))
       )
     `);
@@ -290,6 +350,268 @@ export async function getConnectionByVerificationToken(token) {
         `SELECT * FROM strava_connections WHERE verification_token = ?`,
         [token],
         (err, row) => (err ? reject(err) : resolve(row || null))
+      );
+    });
+  }
+}
+
+// ============================================================
+// STANDALONE SLACK VERIFICATION FUNCTIONS
+// ============================================================
+
+export async function upsertVerifiedSlackUser({ slack_user_id, verification_token }) {
+  if (usePostgres) {
+    const query = `
+      INSERT INTO verified_slack_users (slack_user_id, verification_token, updated_at)
+      VALUES ($1, $2, CURRENT_TIMESTAMP)
+      ON CONFLICT(slack_user_id) DO UPDATE SET
+        verification_token = COALESCE($2, verified_slack_users.verification_token),
+        updated_at = CURRENT_TIMESTAMP
+    `;
+    await pool.query(query, [slack_user_id, verification_token]);
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `
+        INSERT INTO verified_slack_users (slack_user_id, verification_token, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(slack_user_id) DO UPDATE SET
+          verification_token = COALESCE(excluded.verification_token, verification_token),
+          updated_at = datetime('now')
+        `,
+        [slack_user_id, verification_token],
+        (err) => (err ? reject(err) : resolve(true))
+      );
+    });
+  }
+}
+
+export async function getVerifiedSlackUser(slack_user_id) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT * FROM verified_slack_users WHERE slack_user_id = $1`,
+      [slack_user_id]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM verified_slack_users WHERE slack_user_id = ?`,
+        [slack_user_id],
+        (err, row) => (err ? reject(err) : resolve(row || null))
+      );
+    });
+  }
+}
+
+export async function isSlackUserVerified(slack_user_id) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT verified FROM verified_slack_users WHERE slack_user_id = $1`,
+      [slack_user_id]
+    );
+    return result.rows[0]?.verified === true;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT verified FROM verified_slack_users WHERE slack_user_id = ?`,
+        [slack_user_id],
+        (err, row) => (err ? reject(err) : resolve(row?.verified === 1))
+      );
+    });
+  }
+}
+
+export async function verifySlackUserStandalone(verification_token) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `UPDATE verified_slack_users SET verified = TRUE, verification_token = NULL, updated_at = CURRENT_TIMESTAMP WHERE verification_token = $1 RETURNING slack_user_id`,
+      [verification_token]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `UPDATE verified_slack_users SET verified = 1, verification_token = NULL, updated_at = datetime('now') WHERE verification_token = ?`,
+        [verification_token],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes > 0) {
+            db.get(
+              `SELECT slack_user_id FROM verified_slack_users WHERE verified = 1 ORDER BY updated_at DESC LIMIT 1`,
+              [],
+              (err, row) => (err ? reject(err) : resolve(row))
+            );
+          } else {
+            resolve(null);
+          }
+        }
+      );
+    });
+  }
+}
+
+export async function getVerifiedSlackUserByToken(token) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT * FROM verified_slack_users WHERE verification_token = $1`,
+      [token]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM verified_slack_users WHERE verification_token = ?`,
+        [token],
+        (err, row) => (err ? reject(err) : resolve(row || null))
+      );
+    });
+  }
+}
+
+// ============================================================
+// PELOTON CONNECTION FUNCTIONS
+// ============================================================
+
+export async function upsertPelotonConnection({ peloton_user_id, slack_user_id, session_id, username }) {
+  if (usePostgres) {
+    const query = `
+      INSERT INTO peloton_connections (peloton_user_id, slack_user_id, session_id, username, updated_at)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+      ON CONFLICT(peloton_user_id) DO UPDATE SET
+        slack_user_id = $2,
+        session_id = COALESCE($3, peloton_connections.session_id),
+        username = COALESCE($4, peloton_connections.username),
+        updated_at = CURRENT_TIMESTAMP
+    `;
+    await pool.query(query, [peloton_user_id, slack_user_id, session_id, username]);
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `
+        INSERT INTO peloton_connections (peloton_user_id, slack_user_id, session_id, username, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(peloton_user_id) DO UPDATE SET
+          slack_user_id = excluded.slack_user_id,
+          session_id = COALESCE(excluded.session_id, session_id),
+          username = COALESCE(excluded.username, username),
+          updated_at = datetime('now')
+        `,
+        [peloton_user_id, slack_user_id, session_id, username],
+        (err) => (err ? reject(err) : resolve(true))
+      );
+    });
+  }
+}
+
+export async function getPelotonConnection(peloton_user_id) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT * FROM peloton_connections WHERE peloton_user_id = $1`,
+      [peloton_user_id]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM peloton_connections WHERE peloton_user_id = ?`,
+        [peloton_user_id],
+        (err, row) => (err ? reject(err) : resolve(row || null))
+      );
+    });
+  }
+}
+
+export async function getPelotonConnectionBySlackId(slack_user_id) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT * FROM peloton_connections WHERE slack_user_id = $1`,
+      [slack_user_id]
+    );
+    return result.rows[0] || null;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM peloton_connections WHERE slack_user_id = ?`,
+        [slack_user_id],
+        (err, row) => (err ? reject(err) : resolve(row || null))
+      );
+    });
+  }
+}
+
+export async function listPelotonConnections() {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT peloton_user_id, slack_user_id, username, updated_at
+       FROM peloton_connections
+       ORDER BY updated_at DESC`
+    );
+    return result.rows;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT peloton_user_id, slack_user_id, username, updated_at FROM peloton_connections ORDER BY updated_at DESC`,
+        [],
+        (err, rows) => (err ? reject(err) : resolve(rows || []))
+      );
+    });
+  }
+}
+
+export async function deletePelotonConnection(peloton_user_id) {
+  if (usePostgres) {
+    await pool.query(
+      `DELETE FROM peloton_connections WHERE peloton_user_id = $1`,
+      [peloton_user_id]
+    );
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `DELETE FROM peloton_connections WHERE peloton_user_id = ?`,
+        [peloton_user_id],
+        (err) => (err ? reject(err) : resolve(true))
+      );
+    });
+  }
+}
+
+// ============================================================
+// PELOTON WORKOUT IDEMPOTENCY FUNCTIONS
+// ============================================================
+
+export async function markPelotonWorkoutPosted(workout_id, slack_user_id) {
+  if (usePostgres) {
+    await pool.query(
+      `INSERT INTO posted_peloton_workouts(workout_id, slack_user_id)
+       VALUES ($1, $2)
+       ON CONFLICT(workout_id) DO NOTHING`,
+      [workout_id, slack_user_id]
+    );
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `INSERT OR IGNORE INTO posted_peloton_workouts(workout_id, slack_user_id) VALUES (?, ?)`,
+        [workout_id, slack_user_id],
+        (err) => (err ? reject(err) : resolve(true))
+      );
+    });
+  }
+}
+
+export async function wasPelotonWorkoutPosted(workout_id) {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT workout_id FROM posted_peloton_workouts WHERE workout_id = $1`,
+      [workout_id]
+    );
+    return result.rows.length > 0;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT workout_id FROM posted_peloton_workouts WHERE workout_id = ?`,
+        [workout_id],
+        (err, row) => (err ? reject(err) : resolve(!!row))
       );
     });
   }

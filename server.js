@@ -11,11 +11,26 @@ import {
   markActivityPosted,
   verifySlackUser,
   getConnectionByVerificationToken,
+  // Standalone Slack verification
+  upsertVerifiedSlackUser,
+  getVerifiedSlackUser,
+  isSlackUserVerified,
+  verifySlackUserStandalone,
+  getVerifiedSlackUserByToken,
+  // Peloton
+  upsertPelotonConnection,
+  getPelotonConnection,
+  getPelotonConnectionBySlackId,
+  listPelotonConnections,
+  deletePelotonConnection,
+  markPelotonWorkoutPosted,
+  wasPelotonWorkoutPosted,
 } from "./db.js";
 import crypto from "crypto";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
+app.use(express.urlencoded({ extended: true }));
 
 // Admin authentication middleware
 function requireAdminAuth(req, res, next) {
@@ -44,23 +59,27 @@ app.get("/", (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Strava to Slack - Setup</title>
+      <title>Fitness to Slack - Setup</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         body {
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          max-width: 600px;
+          max-width: 700px;
           margin: 50px auto;
           padding: 20px;
           line-height: 1.6;
         }
         h1 { color: #333; }
+        h2 { color: #555; margin-top: 0; }
         .card {
           background: #f5f5f5;
           padding: 20px;
           border-radius: 8px;
           margin: 20px 0;
         }
+        .card.strava { border-left: 4px solid #FC4C02; }
+        .card.peloton { border-left: 4px solid #DF1C2F; }
+        .card.verify { border-left: 4px solid #2196F3; }
         input {
           width: 100%;
           padding: 10px;
@@ -69,8 +88,12 @@ app.get("/", (req, res) => {
           border-radius: 4px;
           box-sizing: border-box;
         }
+        label {
+          display: block;
+          margin-top: 10px;
+          font-weight: bold;
+        }
         button {
-          background: #FC4C02;
           color: white;
           padding: 12px 24px;
           font-size: 16px;
@@ -78,13 +101,18 @@ app.get("/", (req, res) => {
           border-radius: 4px;
           cursor: pointer;
           width: 100%;
-          margin-top: 10px;
+          margin-top: 15px;
         }
-        button:hover { background: #E34402; }
         button:disabled {
           background: #ccc;
           cursor: not-allowed;
         }
+        .btn-verify { background: #2196F3; }
+        .btn-verify:hover { background: #1976D2; }
+        .btn-strava { background: #FC4C02; }
+        .btn-strava:hover { background: #E34402; }
+        .btn-peloton { background: #DF1C2F; }
+        .btn-peloton:hover { background: #b8182a; }
         .instructions {
           background: #e8f4fd;
           padding: 15px;
@@ -99,11 +127,32 @@ app.get("/", (req, res) => {
           border-radius: 3px;
           font-family: monospace;
         }
+        .step-number {
+          background: #333;
+          color: white;
+          border-radius: 50%;
+          width: 24px;
+          height: 24px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          margin-right: 8px;
+        }
+        .note {
+          font-size: 12px;
+          color: #666;
+          margin-top: 10px;
+        }
+        .divider {
+          border-top: 1px solid #ddd;
+          margin: 30px 0;
+        }
       </style>
     </head>
     <body>
-      <h1>🏃 Strava to Slack</h1>
-      <p>Connect your Strava account to automatically post your runs to Slack.</p>
+      <h1>🏃 Fitness to Slack</h1>
+      <p>Connect your Strava or Peloton account to automatically post your workouts to Slack.</p>
 
       <div class="instructions">
         <strong>First, get your Slack Member ID:</strong>
@@ -116,27 +165,77 @@ app.get("/", (req, res) => {
         <p>Your Slack ID will look like: <code>U04HBADQP0B</code></p>
       </div>
 
-      <div class="card">
-        <form id="setupForm">
-          <label for="slackId"><strong>Your Slack Member ID:</strong></label>
+      <!-- Step 1: Verify Slack -->
+      <div class="card verify">
+        <h2><span class="step-number">1</span> Verify Your Slack Account</h2>
+        <p>Before connecting any fitness service, verify your Slack account. We'll send you a DM with a verification link.</p>
+        <form id="verifyForm" action="/verify/slack/start" method="POST">
+          <label for="verifySlackId">Your Slack Member ID:</label>
           <input
             type="text"
-            id="slackId"
+            id="verifySlackId"
+            name="slack_user_id"
+            placeholder="U04HBADQP0B"
+            pattern="U[A-Z0-9]{8,}"
+            required
+          />
+          <button type="submit" class="btn-verify">Send Verification Link</button>
+        </form>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Step 2a: Connect Strava -->
+      <div class="card strava">
+        <h2><span class="step-number">2a</span> Connect Strava</h2>
+        <p>Once verified, connect your Strava account to auto-post your runs.</p>
+        <form id="stravaForm">
+          <label for="stravaSlackId">Your Slack Member ID:</label>
+          <input
+            type="text"
+            id="stravaSlackId"
             name="slackId"
             placeholder="U04HBADQP0B"
             pattern="U[A-Z0-9]{8,}"
             required
           />
-          <button type="submit" id="submitBtn">Connect Strava Account</button>
+          <button type="submit" class="btn-strava">Connect Strava Account</button>
         </form>
       </div>
 
+      <!-- Step 2b: Connect Peloton -->
+      <div class="card peloton">
+        <h2><span class="step-number">2b</span> Connect Peloton</h2>
+        <p>Once verified, connect your Peloton account to auto-post workouts with distance (running, cycling, walking).</p>
+        <form id="pelotonForm">
+          <label for="pelotonSlackId">Your Slack Member ID:</label>
+          <input
+            type="text"
+            id="pelotonSlackId"
+            name="slackId"
+            placeholder="U04HBADQP0B"
+            pattern="U[A-Z0-9]{8,}"
+            required
+          />
+          <button type="submit" class="btn-peloton">Connect Peloton Account</button>
+        </form>
+        <p class="note">You'll enter your Peloton credentials on the next page. Your password is sent directly to Peloton and never stored.</p>
+      </div>
+
       <script>
-        document.getElementById('setupForm').addEventListener('submit', (e) => {
+        document.getElementById('stravaForm').addEventListener('submit', (e) => {
           e.preventDefault();
-          const slackId = document.getElementById('slackId').value.trim();
+          const slackId = document.getElementById('stravaSlackId').value.trim();
           if (slackId) {
             window.location.href = '/auth/strava/start?slack_user_id=' + encodeURIComponent(slackId);
+          }
+        });
+
+        document.getElementById('pelotonForm').addEventListener('submit', (e) => {
+          e.preventDefault();
+          const slackId = document.getElementById('pelotonSlackId').value.trim();
+          if (slackId) {
+            window.location.href = '/auth/peloton/start?slack_user_id=' + encodeURIComponent(slackId);
           }
         });
       </script>
@@ -628,7 +727,7 @@ app.get("/auth/strava/callback", async (req, res) => {
 });
 
 /**
- * Verification endpoint
+ * Verification endpoint (Strava flow)
  * Users click this link from their Slack DM to verify their account
  */
 app.get("/verify/:token", async (req, res) => {
@@ -661,6 +760,677 @@ app.get("/verify/:token", async (req, res) => {
     res.status(500).send(`Verification error: ${err.message}`);
   }
 });
+
+// ============================================================
+// STANDALONE SLACK VERIFICATION (for Peloton users without Strava)
+// ============================================================
+
+/**
+ * Start standalone Slack verification
+ * POST /verify/slack/start
+ * Body: { slack_user_id: "U..." }
+ */
+app.post("/verify/slack/start", async (req, res) => {
+  try {
+    const slackUserId = req.body.slack_user_id;
+
+    if (!slackUserId || !slackUserId.match(/^U[A-Z0-9]{8,}$/)) {
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Error</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>Invalid Slack ID</h1>
+          <p>Please enter a valid Slack Member ID (starts with U followed by letters/numbers).</p>
+          <a href="/">← Go back</a>
+        </body>
+        </html>
+      `);
+    }
+
+    // Check if already verified
+    const existing = await getVerifiedSlackUser(slackUserId);
+    if (existing?.verified) {
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Already Verified</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>✅ Already Verified!</h1>
+          <p>Your Slack account is already verified. You can now connect Strava or Peloton.</p>
+          <a href="/">← Go back to connect services</a>
+        </body>
+        </html>
+      `);
+    }
+
+    // Generate verification token
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+
+    // Save to database
+    await upsertVerifiedSlackUser({
+      slack_user_id: slackUserId,
+      verification_token: verificationToken,
+    });
+
+    // Send verification DM
+    const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const verifyUrl = `${baseUrl}/verify/slack/${verificationToken}`;
+
+    const token = process.env.SLACK_BOT_TOKEN;
+    const dmText = `Hi! You've requested to verify your Slack account for the fitness tracker.\n\n` +
+      `Click this link to complete verification:\n\n` +
+      `${verifyUrl}\n\n` +
+      `Once verified, you can connect Strava or Peloton to auto-post your workouts.`;
+
+    const dmResp = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({ channel: slackUserId, text: dmText }),
+    });
+
+    const dmData = await dmResp.json();
+    if (!dmData.ok) {
+      console.error("Failed to send verification DM:", dmData.error);
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Error</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>Failed to send verification</h1>
+          <p>Could not send a DM to that Slack ID. Please check the ID is correct and that you can receive DMs from the bot.</p>
+          <p>Error: ${dmData.error}</p>
+          <a href="/">← Go back</a>
+        </body>
+        </html>
+      `);
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Check Your Slack DMs</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>📬 Check Your Slack DMs!</h1>
+        <p>We've sent a verification link to your Slack direct messages.</p>
+        <p>Click the link in that message to verify your account, then come back here to connect Strava or Peloton.</p>
+        <a href="/">← Go back</a>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("Slack verification start error:", err);
+    res.status(500).send(`Error: ${err.message}`);
+  }
+});
+
+/**
+ * Complete standalone Slack verification
+ * GET /verify/slack/:token
+ */
+app.get("/verify/slack/:token", async (req, res) => {
+  try {
+    const token = req.params.token;
+
+    // Get user by verification token
+    const user = await getVerifiedSlackUserByToken(token);
+
+    if (!user) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Verification Failed</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>Verification Failed</h1>
+          <p>Invalid or expired verification link.</p>
+          <a href="/">← Go back to start over</a>
+        </body>
+        </html>
+      `);
+    }
+
+    // Verify the user
+    await verifySlackUserStandalone(token);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Verified!</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>✅ Verified!</h1>
+        <p>Your Slack account <strong>${user.slack_user_id}</strong> is now verified.</p>
+        <p>You can now connect Strava or Peloton to auto-post your workouts.</p>
+        <a href="/">← Connect your fitness services</a>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("Slack verification error:", err);
+    res.status(500).send(`Verification error: ${err.message}`);
+  }
+});
+
+// ============================================================
+// PELOTON API HELPERS
+// NOTE: These use Peloton's unofficial API which may change without notice
+// ============================================================
+
+/**
+ * Login to Peloton and get session credentials
+ * @param {string} username - Peloton username or email
+ * @param {string} password - Peloton password (never stored)
+ * @returns {Promise<{session_id: string, user_id: string}>}
+ */
+async function pelotonLogin(username, password) {
+  const resp = await fetch("https://api.onepeloton.com/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username_or_email: username,
+      password: password,
+    }),
+  });
+
+  const data = await resp.json();
+
+  if (!resp.ok || !data.session_id) {
+    throw new Error(data.message || "Peloton login failed");
+  }
+
+  return {
+    session_id: data.session_id,
+    user_id: data.user_id,
+  };
+}
+
+/**
+ * Get recent Peloton workouts for a user
+ * @param {string} session_id - Peloton session cookie
+ * @param {string} user_id - Peloton user ID
+ * @param {number} limit - Max workouts to fetch (default 10)
+ * @returns {Promise<Array>} - Array of workout summaries
+ */
+async function getPelotonWorkouts(session_id, user_id, limit = 10) {
+  const resp = await fetch(
+    `https://api.onepeloton.com/api/user/${user_id}/workouts?limit=${limit}&page=0`,
+    {
+      headers: {
+        Cookie: `peloton_session_id=${session_id}`,
+      },
+    }
+  );
+
+  if (resp.status === 401) {
+    const error = new Error("Peloton session expired");
+    error.code = "SESSION_EXPIRED";
+    throw error;
+  }
+
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    throw new Error(data.message || "Failed to fetch Peloton workouts");
+  }
+
+  return data.data || [];
+}
+
+/**
+ * Get detailed Peloton workout info
+ * @param {string} session_id - Peloton session cookie
+ * @param {string} workout_id - Workout ID
+ * @returns {Promise<Object>} - Detailed workout data
+ */
+async function getPelotonWorkoutDetails(session_id, workout_id) {
+  const resp = await fetch(
+    `https://api.onepeloton.com/api/workout/${workout_id}`,
+    {
+      headers: {
+        Cookie: `peloton_session_id=${session_id}`,
+      },
+    }
+  );
+
+  if (resp.status === 401) {
+    const error = new Error("Peloton session expired");
+    error.code = "SESSION_EXPIRED";
+    throw error;
+  }
+
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    throw new Error(data.message || "Failed to fetch Peloton workout details");
+  }
+
+  return data;
+}
+
+/**
+ * Extract distance in miles from a Peloton workout
+ * @param {Object} workout - Workout object from Peloton API
+ * @returns {number|null} - Distance in miles, or null if no distance
+ */
+function extractPelotonDistance(workout) {
+  // Peloton stores metrics in different places depending on workout type
+  // Check overall_summary first, then summaries array
+  const summary = workout.overall_summary || workout;
+
+  // Distance is typically in miles for US users
+  if (summary.distance !== undefined && summary.distance > 0) {
+    return summary.distance;
+  }
+
+  // Some workouts have distance in summaries array
+  if (workout.summaries) {
+    const distanceSummary = workout.summaries.find(s => s.slug === "distance");
+    if (distanceSummary && distanceSummary.value > 0) {
+      return distanceSummary.value;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get emoji for Peloton workout type
+ * @param {string} fitness_discipline - Peloton fitness_discipline field
+ * @returns {string} - Appropriate emoji
+ */
+function getWorkoutEmoji(fitness_discipline) {
+  const emojiMap = {
+    running: "🏃",
+    outdoor_running: "🏃",
+    walking: "🚶",
+    outdoor_walking: "🚶",
+    cycling: "🚴",
+    outdoor_cycling: "🚴",
+  };
+  return emojiMap[fitness_discipline] || "🏃";
+}
+
+/**
+ * Send session expiry notification to user via Slack DM
+ */
+async function notifySessionExpired(conn) {
+  const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const reauthUrl = `${baseUrl}/auth/peloton/start?slack_user_id=${conn.slack_user_id}`;
+
+  const token = process.env.SLACK_BOT_TOKEN;
+  const dmText = `Your Peloton session has expired. Your workouts are no longer being posted automatically.\n\n` +
+    `Please re-authenticate to resume auto-posting:\n${reauthUrl}`;
+
+  try {
+    await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({ channel: conn.slack_user_id, text: dmText }),
+    });
+    console.log(`Sent session expiry notification to ${conn.slack_user_id}`);
+  } catch (err) {
+    console.error("Failed to send session expiry notification:", err);
+  }
+}
+
+/**
+ * Post a Peloton workout to Slack
+ */
+async function slackPostPelotonActivity(workout, conn) {
+  const distance = extractPelotonDistance(workout);
+  if (!distance) return null; // Skip workouts without distance
+
+  const pedometerUserId = process.env.FETCH_PEDOMETER_USER_ID;
+  const emoji = getWorkoutEmoji(workout.fitness_discipline);
+
+  // Build workout title
+  const title = workout.ride?.title || workout.title || "Peloton Workout";
+
+  // Peloton workout URL
+  const workoutUrl = `https://members.onepeloton.com/members/${conn.username}/workouts/${workout.id}`;
+
+  const text =
+    `<@${pedometerUserId}> +${distance.toFixed(2)} mile ${emoji}\n` +
+    `<@${conn.slack_user_id}>: ${title}\n` +
+    `${workoutUrl}`;
+
+  return await slackPostMessage(text);
+}
+
+// ============================================================
+// PELOTON AUTH ROUTES
+// ============================================================
+
+/**
+ * Peloton login form
+ * GET /auth/peloton/start?slack_user_id=U...
+ */
+app.get("/auth/peloton/start", async (req, res) => {
+  const slackUserId = req.query.slack_user_id;
+
+  if (!slackUserId) {
+    return res.status(400).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Error</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>Missing Slack ID</h1>
+        <p>Please start from the <a href="/">homepage</a> to connect Peloton.</p>
+      </body>
+      </html>
+    `);
+  }
+
+  // Check if Slack user is verified
+  const isVerified = await isSlackUserVerified(slackUserId);
+  if (!isVerified) {
+    return res.status(403).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Not Verified</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>Slack Not Verified</h1>
+        <p>You must verify your Slack account before connecting Peloton.</p>
+        <p>Please go to the <a href="/">homepage</a> and complete Step 1 first.</p>
+      </body>
+      </html>
+    `);
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Connect Peloton</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          max-width: 500px;
+          margin: 50px auto;
+          padding: 20px;
+          line-height: 1.6;
+        }
+        h1 { color: #333; }
+        .card {
+          background: #f5f5f5;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 20px 0;
+        }
+        label {
+          display: block;
+          margin-top: 15px;
+          font-weight: bold;
+        }
+        input {
+          width: 100%;
+          padding: 10px;
+          font-size: 16px;
+          border: 2px solid #ddd;
+          border-radius: 4px;
+          box-sizing: border-box;
+          margin-top: 5px;
+        }
+        button {
+          background: #DF1C2F;
+          color: white;
+          padding: 12px 24px;
+          font-size: 16px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          width: 100%;
+          margin-top: 20px;
+        }
+        button:hover { background: #b8182a; }
+        .note {
+          font-size: 12px;
+          color: #666;
+          margin-top: 10px;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>🚴 Connect Peloton</h1>
+      <p>Enter your Peloton credentials to auto-post your workouts to Slack.</p>
+
+      <div class="card">
+        <form action="/auth/peloton/login" method="POST">
+          <input type="hidden" name="slack_user_id" value="${slackUserId}" />
+          <label for="username">Peloton Username or Email</label>
+          <input type="text" id="username" name="username" required />
+          <label for="password">Peloton Password</label>
+          <input type="password" id="password" name="password" required />
+          <button type="submit">Connect Peloton</button>
+        </form>
+        <p class="note">Your password is sent directly to Peloton and is never stored by this app.</p>
+      </div>
+
+      <a href="/">← Back to home</a>
+    </body>
+    </html>
+  `);
+});
+
+/**
+ * Handle Peloton login
+ * POST /auth/peloton/login
+ */
+app.post("/auth/peloton/login", async (req, res) => {
+  try {
+    const { slack_user_id, username, password } = req.body;
+
+    if (!slack_user_id || !username || !password) {
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Error</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>Missing Fields</h1>
+          <p>Please fill in all fields.</p>
+          <a href="/auth/peloton/start?slack_user_id=${slack_user_id}">← Try again</a>
+        </body>
+        </html>
+      `);
+    }
+
+    // Verify Slack user is verified
+    const isVerified = await isSlackUserVerified(slack_user_id);
+    if (!isVerified) {
+      return res.status(403).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Not Verified</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+          <h1>Slack Not Verified</h1>
+          <p>Your Slack account must be verified first.</p>
+          <a href="/">← Go back to verify</a>
+        </body>
+        </html>
+      `);
+    }
+
+    // Login to Peloton
+    const { session_id, user_id } = await pelotonLogin(username, password);
+
+    // Store connection (password is NOT stored)
+    await upsertPelotonConnection({
+      peloton_user_id: user_id,
+      slack_user_id: slack_user_id,
+      session_id: session_id,
+      username: username.includes("@") ? username.split("@")[0] : username,
+    });
+
+    console.log(`Peloton connected: user_id=${user_id}, slack_user_id=${slack_user_id}`);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Connected!</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>✅ Peloton Connected!</h1>
+        <p>Your Peloton account is now linked. Your workouts with distance (running, cycling, walking) will be automatically posted to Slack.</p>
+        <p><strong>Peloton User ID:</strong> ${user_id}</p>
+        <p><strong>Slack ID:</strong> ${slack_user_id}</p>
+        <a href="/">← Back to home</a>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("Peloton login error:", err);
+    const slackUserId = req.body.slack_user_id || "";
+    res.status(400).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Login Failed</title></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>Peloton Login Failed</h1>
+        <p>${err.message}</p>
+        <p>Please check your username and password.</p>
+        <a href="/auth/peloton/start?slack_user_id=${slackUserId}">← Try again</a>
+      </body>
+      </html>
+    `);
+  }
+});
+
+/**
+ * List Peloton connections (admin)
+ */
+app.get("/peloton/connections", requireAdminAuth, async (req, res) => {
+  const rows = await listPelotonConnections();
+  res.json({ ok: true, connections: rows });
+});
+
+/**
+ * Delete Peloton connection (admin)
+ */
+app.delete("/peloton/connections/:peloton_user_id", requireAdminAuth, async (req, res) => {
+  try {
+    await deletePelotonConnection(req.params.peloton_user_id);
+    res.json({ ok: true, message: "Connection deleted" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============================================================
+// PELOTON POLLING LOOP
+// ============================================================
+
+/**
+ * Poll a single Peloton user for new workouts
+ */
+async function pollPelotonUser(conn) {
+  const result = { posted: 0, skipped: 0, errors: 0 };
+
+  try {
+    // Fetch recent workouts
+    const workouts = await getPelotonWorkouts(conn.session_id, conn.peloton_user_id);
+
+    for (const workoutSummary of workouts) {
+      try {
+        // Check idempotency
+        if (await wasPelotonWorkoutPosted(workoutSummary.id)) {
+          result.skipped++;
+          continue;
+        }
+
+        // Get full workout details
+        const workout = await getPelotonWorkoutDetails(conn.session_id, workoutSummary.id);
+
+        // Check if workout has distance
+        const distance = extractPelotonDistance(workout);
+        if (!distance) {
+          result.skipped++;
+          continue;
+        }
+
+        // Post to Slack
+        await slackPostPelotonActivity(workout, conn);
+
+        // Mark as posted
+        await markPelotonWorkoutPosted(workoutSummary.id, conn.slack_user_id);
+        result.posted++;
+
+        console.log(`Posted Peloton workout ${workoutSummary.id} for ${conn.slack_user_id}`);
+      } catch (workoutErr) {
+        console.error(`Error processing workout ${workoutSummary.id}:`, workoutErr);
+        result.errors++;
+      }
+    }
+  } catch (err) {
+    if (err.code === "SESSION_EXPIRED") {
+      console.log(`Peloton session expired for ${conn.slack_user_id}`);
+      await notifySessionExpired(conn);
+    } else {
+      console.error(`Error polling Peloton user ${conn.peloton_user_id}:`, err);
+    }
+    result.errors++;
+  }
+
+  return result;
+}
+
+/**
+ * Main Peloton polling function - polls all connected users
+ */
+async function pollAllPelotonUsers() {
+  console.log("Starting Peloton poll cycle...");
+
+  try {
+    const connections = await listPelotonConnections();
+
+    if (connections.length === 0) {
+      console.log("No Peloton connections to poll");
+      return;
+    }
+
+    let totalPosted = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+
+    for (const conn of connections) {
+      // Get full connection with session_id
+      const fullConn = await getPelotonConnection(conn.peloton_user_id);
+      if (!fullConn || !fullConn.session_id) {
+        console.log(`Skipping ${conn.peloton_user_id} - no session`);
+        continue;
+      }
+
+      const result = await pollPelotonUser(fullConn);
+      totalPosted += result.posted;
+      totalSkipped += result.skipped;
+      totalErrors += result.errors;
+    }
+
+    console.log(`Peloton poll complete: posted=${totalPosted}, skipped=${totalSkipped}, errors=${totalErrors}`);
+  } catch (err) {
+    console.error("Peloton poll cycle error:", err);
+  }
+}
+
+/**
+ * Start the Peloton polling loop
+ */
+function startPelotonPoller() {
+  const intervalMinutes = parseInt(process.env.PELOTON_POLL_INTERVAL_MINUTES) || 5;
+  const intervalMs = intervalMinutes * 60 * 1000;
+
+  console.log(`Starting Peloton poller with ${intervalMinutes} minute interval`);
+
+  // Run immediately on startup
+  pollAllPelotonUsers();
+
+  // Then run on interval
+  setInterval(pollAllPelotonUsers, intervalMs);
+}
 
 /**
  * DEBUG: Check your connection status (temporary endpoint)
@@ -818,4 +1588,7 @@ app.post("/strava/webhook", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+
+  // Start Peloton polling loop
+  startPelotonPoller();
 });
