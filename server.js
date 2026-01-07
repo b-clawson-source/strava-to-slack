@@ -29,7 +29,9 @@ import {
 import crypto from "crypto";
 
 const app = express();
-app.use(express.json());
+// Parse JSON bodies (only for application/json content-type)
+app.use(express.json({ type: "application/json" }));
+// Parse URL-encoded bodies (for HTML form submissions)
 app.use(express.urlencoded({ extended: true }));
 
 // Admin authentication middleware
