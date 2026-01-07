@@ -17,6 +17,7 @@ import {
   isSlackUserVerified,
   verifySlackUserStandalone,
   getVerifiedSlackUserByToken,
+  listVerifiedSlackUsers,
   // Peloton
   upsertPelotonConnection,
   getPelotonConnection,
@@ -1469,6 +1470,14 @@ app.get("/debug/my-connection", async (req, res) => {
 app.get("/connections", requireAdminAuth, async (req, res) => {
   const rows = await listConnections();
   res.json({ ok: true, connections: rows });
+});
+
+/**
+ * List all verified Slack users (admin)
+ */
+app.get("/verified-users", requireAdminAuth, async (req, res) => {
+  const rows = await listVerifiedSlackUsers();
+  res.json({ ok: true, verified_users: rows });
 });
 
 /**

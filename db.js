@@ -451,6 +451,25 @@ export async function verifySlackUserStandalone(verification_token) {
   }
 }
 
+export async function listVerifiedSlackUsers() {
+  if (usePostgres) {
+    const result = await pool.query(
+      `SELECT slack_user_id, verified, created_at, updated_at
+       FROM verified_slack_users
+       ORDER BY updated_at DESC`
+    );
+    return result.rows;
+  } else {
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT slack_user_id, verified, created_at, updated_at FROM verified_slack_users ORDER BY updated_at DESC`,
+        [],
+        (err, rows) => (err ? reject(err) : resolve(rows || []))
+      );
+    });
+  }
+}
+
 export async function getVerifiedSlackUserByToken(token) {
   if (usePostgres) {
     const result = await pool.query(
