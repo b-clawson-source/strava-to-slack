@@ -176,7 +176,7 @@ app.get("/", (req, res) => {
             id="verifySlackId"
             name="slack_user_id"
             placeholder="U04HBADQP0B"
-            pattern="U[A-Z0-9]{8,}"
+            pattern="U[A-Za-z0-9]{8,}"
             required
           />
           <button type="submit" class="btn-verify">Send Verification Link</button>
@@ -196,7 +196,7 @@ app.get("/", (req, res) => {
             id="stravaSlackId"
             name="slackId"
             placeholder="U04HBADQP0B"
-            pattern="U[A-Z0-9]{8,}"
+            pattern="U[A-Za-z0-9]{8,}"
             required
           />
           <button type="submit" class="btn-strava">Connect Strava Account</button>
@@ -214,7 +214,7 @@ app.get("/", (req, res) => {
             id="pelotonSlackId"
             name="slackId"
             placeholder="U04HBADQP0B"
-            pattern="U[A-Z0-9]{8,}"
+            pattern="U[A-Za-z0-9]{8,}"
             required
           />
           <button type="submit" class="btn-peloton">Connect Peloton Account</button>
@@ -774,7 +774,7 @@ app.post("/verify/slack/start", async (req, res) => {
   try {
     const slackUserId = req.body.slack_user_id;
 
-    if (!slackUserId || !slackUserId.match(/^U[A-Z0-9]{8,}$/)) {
+    if (!slackUserId || !slackUserId.match(/^U[A-Za-z0-9]{8,}$/)) {
       return res.status(400).send(`
         <!DOCTYPE html>
         <html>
