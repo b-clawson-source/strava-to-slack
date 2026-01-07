@@ -992,61 +992,103 @@ app.get("/verify/slack/:token", async (req, res) => {
 async function pelotonLogin(username, password) {
   let browser;
   try {
+    console.log('[Peloton] Launching browser...');
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--window-size=1920,1080',
+      ],
     });
 
     const page = await browser.newPage();
 
+    // Anti-detection measures
+    await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent(
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    await page.goto('https://auth.onepeloton.com/', { waitUntil: 'networkidle2' });
+    // Hide webdriver property
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
 
+    console.log('[Peloton] Navigating to auth page...');
+    const response = await page.goto('https://auth.onepeloton.com/', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+    console.log('[Peloton] Auth page status:', response.status());
+
+    const pageContent = await page.content();
+    if (pageContent.includes('Access forbidden') || pageContent.includes('Access Denied')) {
+      console.log('[Peloton] Auth page blocked by Cloudflare');
+      throw new Error('Peloton auth page is blocked. Please try again later.');
+    }
+
+    console.log('[Peloton] Waiting for login form...');
     await page.waitForSelector('input[name="usernameOrEmail"]', { timeout: 15000 });
+
+    console.log('[Peloton] Filling credentials...');
     await page.type('input[name="usernameOrEmail"]', username, { delay: 50 });
     await page.type('input[name="password"]', password, { delay: 50 });
 
+    console.log('[Peloton] Submitting login...');
     await Promise.all([
       page.click('button[type="submit"]'),
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
     ]);
 
-    await page.waitForFunction(
-      () => document.cookie.includes('peloton_session_id'),
-      { timeout: 15000 }
-    ).catch(() => {});
+    // Wait a bit for cookies to be set
+    await new Promise(r => setTimeout(r, 2000));
 
+    console.log('[Peloton] Checking for session cookie...');
     const cookies = await page.cookies();
+    console.log('[Peloton] Cookies found:', cookies.map(c => c.name).join(', '));
+
     const sessionCookie = cookies.find(c => c.name === 'peloton_session_id');
 
     if (!sessionCookie) {
+      const currentUrl = page.url();
+      console.log('[Peloton] Current URL:', currentUrl);
+
       const errorText = await page.evaluate(() => {
-        const errorEl = document.querySelector('[class*="error"], [class*="Error"], .alert, .message');
+        const errorEl = document.querySelector('[class*="error"], [class*="Error"], .alert, [data-testid*="error"]');
         return errorEl ? errorEl.textContent : null;
       });
+      console.log('[Peloton] Error text on page:', errorText);
+
+      const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 500));
+      console.log('[Peloton] Page content preview:', bodyText);
+
       throw new Error(errorText || 'Login failed - could not get session. Check username/password.');
     }
 
     const session_id = sessionCookie.value;
+    console.log('[Peloton] Got session_id, fetching user info...');
 
     const userResp = await page.evaluate(async (sid) => {
       const res = await fetch('https://api.onepeloton.com/api/me', {
-        headers: { Cookie: `peloton_session_id=${sid}` },
         credentials: 'include',
       });
-      return res.json();
+      return { status: res.status, data: await res.json().catch(() => null) };
     }, session_id);
 
-    if (!userResp.id) {
-      throw new Error('Could not fetch user ID after login');
+    console.log('[Peloton] /api/me response status:', userResp.status);
+
+    if (!userResp.data?.id) {
+      console.log('[Peloton] /api/me response:', JSON.stringify(userResp.data));
+      throw new Error(userResp.data?.message || 'Could not fetch user ID after login');
     }
 
+    console.log('[Peloton] Login successful, user_id:', userResp.data.id);
     return {
       session_id,
-      user_id: userResp.id,
+      user_id: userResp.data.id,
     };
   } finally {
     if (browser) {
