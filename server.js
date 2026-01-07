@@ -2,7 +2,6 @@ import express from "express";
 import "dotenv/config";
 import fetch from "node-fetch";
 import polyline from "@mapbox/polyline";
-import puppeteer from "puppeteer";
 import {
   upsertConnection,
   listConnections,
@@ -984,117 +983,36 @@ app.get("/verify/slack/:token", async (req, res) => {
 // ============================================================
 
 /**
- * Login to Peloton using headless browser to bypass Cloudflare
- * @param {string} username - Peloton username or email
- * @param {string} password - Peloton password (never stored)
- * @returns {Promise<{session_id: string, user_id: string}>}
+ * Validate a Peloton session ID and get user info
+ * @param {string} session_id - Peloton session cookie from browser
+ * @returns {Promise<{session_id: string, user_id: string, username: string}>}
  */
-async function pelotonLogin(username, password) {
-  let browser;
-  try {
-    console.log('[Peloton] Launching browser...');
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1920,1080',
-      ],
-    });
+async function validatePelotonSession(session_id) {
+  const resp = await fetch('https://api.onepeloton.com/api/me', {
+    headers: {
+      Cookie: `peloton_session_id=${session_id}`,
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    },
+  });
 
-    const page = await browser.newPage();
-
-    // Anti-detection measures
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent(
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    // Hide webdriver property
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    });
-
-    console.log('[Peloton] Navigating to auth page...');
-    const response = await page.goto('https://auth.onepeloton.com/', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-    console.log('[Peloton] Auth page status:', response.status());
-
-    const pageContent = await page.content();
-    if (pageContent.includes('Access forbidden') || pageContent.includes('Access Denied')) {
-      console.log('[Peloton] Auth page blocked by Cloudflare');
-      throw new Error('Peloton auth page is blocked. Please try again later.');
+  if (!resp.ok) {
+    if (resp.status === 401) {
+      throw new Error('Invalid or expired session ID. Please get a fresh one from your browser.');
     }
-
-    console.log('[Peloton] Waiting for login form...');
-    await page.waitForSelector('input[name="usernameOrEmail"]', { timeout: 15000 });
-
-    console.log('[Peloton] Filling credentials...');
-    await page.type('input[name="usernameOrEmail"]', username, { delay: 50 });
-    await page.type('input[name="password"]', password, { delay: 50 });
-
-    console.log('[Peloton] Submitting login...');
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
-    ]);
-
-    // Wait a bit for cookies to be set
-    await new Promise(r => setTimeout(r, 2000));
-
-    console.log('[Peloton] Checking for session cookie...');
-    const cookies = await page.cookies();
-    console.log('[Peloton] Cookies found:', cookies.map(c => c.name).join(', '));
-
-    const sessionCookie = cookies.find(c => c.name === 'peloton_session_id');
-
-    if (!sessionCookie) {
-      const currentUrl = page.url();
-      console.log('[Peloton] Current URL:', currentUrl);
-
-      const errorText = await page.evaluate(() => {
-        const errorEl = document.querySelector('[class*="error"], [class*="Error"], .alert, [data-testid*="error"]');
-        return errorEl ? errorEl.textContent : null;
-      });
-      console.log('[Peloton] Error text on page:', errorText);
-
-      const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 500));
-      console.log('[Peloton] Page content preview:', bodyText);
-
-      throw new Error(errorText || 'Login failed - could not get session. Check username/password.');
-    }
-
-    const session_id = sessionCookie.value;
-    console.log('[Peloton] Got session_id, fetching user info...');
-
-    const userResp = await page.evaluate(async (sid) => {
-      const res = await fetch('https://api.onepeloton.com/api/me', {
-        credentials: 'include',
-      });
-      return { status: res.status, data: await res.json().catch(() => null) };
-    }, session_id);
-
-    console.log('[Peloton] /api/me response status:', userResp.status);
-
-    if (!userResp.data?.id) {
-      console.log('[Peloton] /api/me response:', JSON.stringify(userResp.data));
-      throw new Error(userResp.data?.message || 'Could not fetch user ID after login');
-    }
-
-    console.log('[Peloton] Login successful, user_id:', userResp.data.id);
-    return {
-      session_id,
-      user_id: userResp.data.id,
-    };
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
+    throw new Error(`Peloton API error (HTTP ${resp.status})`);
   }
+
+  const data = await resp.json();
+
+  if (!data.id) {
+    throw new Error('Could not fetch user info. Session may be invalid.');
+  }
+
+  return {
+    session_id,
+    user_id: data.id,
+    username: data.username,
+  };
 }
 
 /**
@@ -1324,24 +1242,31 @@ app.get("/auth/peloton/start", async (req, res) => {
     <body>
       <div class="container">
         <h1>Connect Peloton</h1>
-        <p class="subtitle">Enter your credentials to auto-post workouts to Slack.</p>
+        <p class="subtitle">Connect your account to auto-post workouts to Slack.</p>
 
         <div class="card peloton">
-          <h2><span class="step-badge">🚴</span> Peloton Login</h2>
-          <p>Connect your Peloton account to automatically share your workouts.</p>
+          <h2><span class="step-badge">🚴</span> Peloton Session ID</h2>
+          <p>Due to Peloton's security measures, you'll need to manually copy your session ID from your browser.</p>
+
+          <details style="margin: 16px 0; background: #f8fafc; padding: 12px; border-radius: 8px;">
+            <summary style="cursor: pointer; font-weight: 600; color: #1e40af;">How to get your Session ID</summary>
+            <ol style="margin-top: 12px; padding-left: 20px; line-height: 1.8;">
+              <li>Log into <a href="https://members.onepeloton.com" target="_blank" style="color: #2563eb;">members.onepeloton.com</a> in your browser</li>
+              <li>Open Developer Tools (F12 or Cmd+Option+I)</li>
+              <li>Go to <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>members.onepeloton.com</strong></li>
+              <li>Find <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;">peloton_session_id</code> and copy its value</li>
+            </ol>
+          </details>
+
           <form action="/auth/peloton/login" method="POST">
             <input type="hidden" name="slack_user_id" value="${slackUserId}" />
-            <div style="margin-bottom: 16px;">
-              <label for="username">Peloton Username or Email</label>
-              <input type="text" id="username" name="username" required placeholder="your@email.com" />
-            </div>
             <div>
-              <label for="password">Peloton Password</label>
-              <input type="password" id="password" name="password" required placeholder="••••••••" />
+              <label for="session_id">Session ID</label>
+              <input type="text" id="session_id" name="session_id" required placeholder="Paste your peloton_session_id here" style="font-family: monospace;" />
             </div>
             <button type="submit" class="btn-peloton">Connect Peloton</button>
           </form>
-          <p class="note">Your password is sent directly to Peloton and is never stored by this app.</p>
+          <p class="note">Your session ID is stored securely and used only to fetch your workouts.</p>
         </div>
 
         <a href="/" class="btn-back">← Back to home</a>
@@ -1352,14 +1277,14 @@ app.get("/auth/peloton/start", async (req, res) => {
 });
 
 /**
- * Handle Peloton login
+ * Handle Peloton session ID submission
  * POST /auth/peloton/login
  */
 app.post("/auth/peloton/login", async (req, res) => {
   try {
-    const { slack_user_id, username, password } = req.body;
+    const { slack_user_id, session_id } = req.body;
 
-    if (!slack_user_id || !username || !password) {
+    if (!slack_user_id || !session_id) {
       return res.status(400).send(`
         <!DOCTYPE html>
         <html>
@@ -1370,10 +1295,10 @@ app.post("/auth/peloton/login", async (req, res) => {
         </head>
         <body>
           <div class="container">
-            <h1>Missing Fields</h1>
-            <p class="subtitle">Please fill in all required fields.</p>
+            <h1>Missing Session ID</h1>
+            <p class="subtitle">Please provide your Peloton session ID.</p>
             <div class="card">
-              <p>Both username and password are required to connect your Peloton account.</p>
+              <p>The session ID is required to connect your Peloton account.</p>
             </div>
             <a href="/auth/peloton/start?slack_user_id=${slack_user_id}" class="btn-back">← Try again</a>
           </div>
@@ -1408,15 +1333,15 @@ app.post("/auth/peloton/login", async (req, res) => {
       `);
     }
 
-    // Login to Peloton
-    const { session_id, user_id } = await pelotonLogin(username, password);
+    // Validate session ID with Peloton
+    const { user_id, username } = await validatePelotonSession(session_id.trim());
 
-    // Store connection (password is NOT stored)
+    // Store connection
     await upsertPelotonConnection({
       peloton_user_id: user_id,
       slack_user_id: slack_user_id,
-      session_id: session_id,
-      username: username.includes("@") ? username.split("@")[0] : username,
+      session_id: session_id.trim(),
+      username: username,
     });
 
     console.log(`Peloton connected: user_id=${user_id}, slack_user_id=${slack_user_id}`);
