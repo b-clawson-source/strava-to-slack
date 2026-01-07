@@ -2,7 +2,6 @@ import express from "express";
 import "dotenv/config";
 import fetch from "node-fetch";
 import polyline from "@mapbox/polyline";
-import FormData from "form-data";
 import {
   upsertConnection,
   listConnections,
@@ -703,16 +702,12 @@ app.get("/auth/strava/callback", async (req, res) => {
     });
 
     const raw = await tokenResp.text();
-    console.log("Strava token exchange status:", tokenResp.status);
-
     let tokenData;
     try {
       tokenData = JSON.parse(raw);
     } catch {
       tokenData = { raw };
     }
-
-    console.log("Strava token exchange success for athlete:", tokenData?.athlete?.id);
 
     if (!tokenResp.ok || tokenData?.errors) {
       return res
@@ -822,12 +817,9 @@ app.get("/verify/:token", async (req, res) => {
  */
 app.post("/verify/slack/start", async (req, res) => {
   try {
-    console.log("Verify slack start - body:", req.body);
     const slackUserId = req.body.slack_user_id;
-    console.log("Slack user ID:", slackUserId);
 
     if (!slackUserId || !slackUserId.match(/^U[A-Za-z0-9]{8,}$/)) {
-      console.log("Validation failed for:", slackUserId);
       return res.status(400).send(`
         <!DOCTYPE html>
         <html lang="en">
@@ -867,12 +859,10 @@ app.post("/verify/slack/start", async (req, res) => {
     const verificationToken = crypto.randomBytes(32).toString("hex");
 
     // Save to database
-    console.log("Saving verification token for", slackUserId, "token:", verificationToken);
     await upsertVerifiedSlackUser({
       slack_user_id: slackUserId,
       verification_token: verificationToken,
     });
-    console.log("Verification token saved successfully");
 
     // Send verification DM
     const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -941,14 +931,11 @@ app.post("/verify/slack/start", async (req, res) => {
 app.get("/verify/slack/:token", async (req, res) => {
   try {
     const token = req.params.token;
-    console.log("Verifying slack token:", token);
 
     // Get user by verification token
     const user = await getVerifiedSlackUserByToken(token);
-    console.log("Found user:", user);
 
     if (!user) {
-      console.log("No user found for token - may already be verified");
       return res.send(`
         <!DOCTYPE html>
         <html lang="en">
@@ -1002,8 +989,6 @@ app.get("/verify/slack/:token", async (req, res) => {
  * @returns {Promise<{session_id: string, user_id: string}>}
  */
 async function pelotonLogin(username, password) {
-  console.log("Attempting Peloton login for:", username);
-
   const resp = await fetch("https://api.onepeloton.com/auth/login", {
     method: "POST",
     headers: {
@@ -1021,9 +1006,7 @@ async function pelotonLogin(username, password) {
     }),
   });
 
-  console.log("Peloton login response status:", resp.status);
   const data = await resp.json();
-  console.log("Peloton login response:", JSON.stringify(data).substring(0, 200));
 
   if (!resp.ok || !data.session_id) {
     throw new Error(data.message || `Peloton login failed (HTTP ${resp.status})`);
@@ -1492,8 +1475,6 @@ async function pollPelotonUser(conn) {
         // Mark as posted
         await markPelotonWorkoutPosted(workoutSummary.id, conn.slack_user_id);
         result.posted++;
-
-        console.log(`Posted Peloton workout ${workoutSummary.id} for ${conn.slack_user_id}`);
       } catch (workoutErr) {
         console.error(`Error processing workout ${workoutSummary.id}:`, workoutErr);
         result.errors++;
@@ -1501,7 +1482,6 @@ async function pollPelotonUser(conn) {
     }
   } catch (err) {
     if (err.code === "SESSION_EXPIRED") {
-      console.log(`Peloton session expired for ${conn.slack_user_id}`);
       await notifySessionExpired(conn);
     } else {
       console.error(`Error polling Peloton user ${conn.peloton_user_id}:`, err);
@@ -1516,37 +1496,17 @@ async function pollPelotonUser(conn) {
  * Main Peloton polling function - polls all connected users
  */
 async function pollAllPelotonUsers() {
-  console.log("Starting Peloton poll cycle...");
-
   try {
     const connections = await listPelotonConnections();
-
-    if (connections.length === 0) {
-      console.log("No Peloton connections to poll");
-      return;
-    }
-
-    let totalPosted = 0;
-    let totalSkipped = 0;
-    let totalErrors = 0;
+    if (connections.length === 0) return;
 
     for (const conn of connections) {
-      // Get full connection with session_id
       const fullConn = await getPelotonConnection(conn.peloton_user_id);
-      if (!fullConn || !fullConn.session_id) {
-        console.log(`Skipping ${conn.peloton_user_id} - no session`);
-        continue;
-      }
-
-      const result = await pollPelotonUser(fullConn);
-      totalPosted += result.posted;
-      totalSkipped += result.skipped;
-      totalErrors += result.errors;
+      if (!fullConn || !fullConn.session_id) continue;
+      await pollPelotonUser(fullConn);
     }
-
-    console.log(`Peloton poll complete: posted=${totalPosted}, skipped=${totalSkipped}, errors=${totalErrors}`);
   } catch (err) {
-    console.error("Peloton poll cycle error:", err);
+    console.error("Peloton poll error:", err);
   }
 }
 
@@ -1674,7 +1634,6 @@ app.post("/strava/webhook", async (req, res) => {
 
   try {
     const event = req.body;
-    console.log("Received webhook event:", event);
 
     // Only care about newly created activities
     if (event?.object_type !== "activity" || event?.aspect_type !== "create") return;
@@ -1683,22 +1642,13 @@ app.post("/strava/webhook", async (req, res) => {
     const athleteId = event.owner_id;
 
     // Idempotency: don't double-post
-    if (await wasActivityPosted(activityId)) {
-      console.log("Already posted activity:", activityId);
-      return;
-    }
+    if (await wasActivityPosted(activityId)) return;
 
     const conn = await getConnection(athleteId);
-    if (!conn) {
-      console.log(`No connection found for athlete_id=${athleteId}. Skipping.`);
-      return;
-    }
+    if (!conn) return;
 
     // Check if user has verified their Slack account
-    if (conn.slack_user_id && !conn.verified) {
-      console.log(`User ${athleteId} has not verified their Slack account yet. Skipping.`);
-      return;
-    }
+    if (conn.slack_user_id && !conn.verified) return;
 
     // Refresh token (Strava may rotate refresh_token)
     const refreshed = await refreshStravaToken(conn.refresh_token);
@@ -1715,36 +1665,20 @@ app.post("/strava/webhook", async (req, res) => {
     // Fetch activity details
     const activity = await getStravaActivity(refreshed.access_token, activityId);
 
-    console.log("Fetched activity:", {
-      id: activity.id,
-      type: activity.type,
-      distance: activity.distance,
-      name: activity.name,
-    });
-
     // Only runs
-    if (activity.type !== "Run") {
-      console.log("Not a Run. Skipping. type=", activity.type);
-      return;
-    }
+    if (activity.type !== "Run") return;
 
     // Post activity with map image (or without if no map available)
-    const slackResp = await slackPostActivityWithMap(activity, conn);
-    console.log("Slack post ok:", { ts: slackResp.ts || slackResp.file?.id });
-
+    await slackPostActivityWithMap(activity, conn);
     await markActivityPosted(activityId, athleteId);
-    console.log(`Posted run activity ${activityId} for athlete ${athleteId}`);
   } catch (err) {
-    console.error("Webhook processing error:", err);
+    console.error("Webhook error:", err);
   }
 });
 
-// Global error handler - catches all unhandled errors
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error("Global error handler caught:", err);
-  console.error("Request path:", req.path);
-  console.error("Request method:", req.method);
-  console.error("Request headers:", req.headers);
+  console.error(`Error on ${req.method} ${req.path}:`, err.message);
   res.status(500).send(`Error: ${err.message}`);
 });
 
