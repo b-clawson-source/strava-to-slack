@@ -29,7 +29,7 @@ import {
 import crypto from "crypto";
 
 const app = express();
-app.use(express.json({ type: "*/*" }));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Admin authentication middleware
