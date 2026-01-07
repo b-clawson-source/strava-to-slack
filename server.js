@@ -889,15 +889,16 @@ app.get("/verify/slack/:token", async (req, res) => {
     console.log("Found user:", user);
 
     if (!user) {
-      console.log("No user found for token - verification failed");
-      return res.status(404).send(`
+      console.log("No user found for token - may already be verified");
+      return res.send(`
         <!DOCTYPE html>
         <html>
-        <head><title>Verification Failed</title></head>
+        <head><title>Link Already Used</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-          <h1>Verification Failed</h1>
-          <p>Invalid or expired verification link.</p>
-          <a href="/">← Go back to start over</a>
+          <h1>Link Already Used</h1>
+          <p>This verification link has already been used or expired.</p>
+          <p><strong>If you've already verified</strong>, you're all set! You can now connect your fitness services.</p>
+          <a href="/" style="display: inline-block; margin-top: 15px; padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px;">← Connect Strava or Peloton</a>
         </body>
         </html>
       `);
@@ -936,19 +937,26 @@ app.get("/verify/slack/:token", async (req, res) => {
  * @returns {Promise<{session_id: string, user_id: string}>}
  */
 async function pelotonLogin(username, password) {
+  console.log("Attempting Peloton login for:", username);
+
   const resp = await fetch("https://api.onepeloton.com/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
     body: JSON.stringify({
       username_or_email: username,
       password: password,
     }),
   });
 
+  console.log("Peloton login response status:", resp.status);
   const data = await resp.json();
+  console.log("Peloton login response:", JSON.stringify(data).substring(0, 200));
 
   if (!resp.ok || !data.session_id) {
-    throw new Error(data.message || "Peloton login failed");
+    throw new Error(data.message || `Peloton login failed (HTTP ${resp.status})`);
   }
 
   return {
