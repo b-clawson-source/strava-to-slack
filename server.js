@@ -1588,6 +1588,15 @@ app.post("/strava/webhook", async (req, res) => {
   }
 });
 
+// Global error handler - catches all unhandled errors
+app.use((err, req, res, next) => {
+  console.error("Global error handler caught:", err);
+  console.error("Request path:", req.path);
+  console.error("Request method:", req.method);
+  console.error("Request headers:", req.headers);
+  res.status(500).send(`Error: ${err.message}`);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
