@@ -1008,7 +1008,12 @@ async function pelotonLogin(username, password) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Origin": "https://members.onepeloton.com",
+      "Referer": "https://members.onepeloton.com/",
+      "Peloton-Platform": "web",
     },
     body: JSON.stringify({
       username_or_email: username,
