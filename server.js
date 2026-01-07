@@ -814,10 +814,12 @@ app.post("/verify/slack/start", async (req, res) => {
     const verificationToken = crypto.randomBytes(32).toString("hex");
 
     // Save to database
+    console.log("Saving verification token for", slackUserId, "token:", verificationToken);
     await upsertVerifiedSlackUser({
       slack_user_id: slackUserId,
       verification_token: verificationToken,
     });
+    console.log("Verification token saved successfully");
 
     // Send verification DM
     const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -880,11 +882,14 @@ app.post("/verify/slack/start", async (req, res) => {
 app.get("/verify/slack/:token", async (req, res) => {
   try {
     const token = req.params.token;
+    console.log("Verifying slack token:", token);
 
     // Get user by verification token
     const user = await getVerifiedSlackUserByToken(token);
+    console.log("Found user:", user);
 
     if (!user) {
+      console.log("No user found for token - verification failed");
       return res.status(404).send(`
         <!DOCTYPE html>
         <html>
@@ -1437,6 +1442,18 @@ function startPelotonPoller() {
   // Then run on interval
   setInterval(pollAllPelotonUsers, intervalMs);
 }
+
+/**
+ * DEBUG: Check verified slack users table
+ */
+app.get("/debug/verified-users", async (req, res) => {
+  try {
+    const users = await listVerifiedSlackUsers();
+    res.json({ ok: true, count: users.length, users });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 /**
  * DEBUG: Check your connection status (temporary endpoint)
