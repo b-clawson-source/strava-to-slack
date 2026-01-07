@@ -2,6 +2,7 @@ import express from "express";
 import "dotenv/config";
 import fetch from "node-fetch";
 import polyline from "@mapbox/polyline";
+import puppeteer from "puppeteer";
 import {
   upsertConnection,
   listConnections,
@@ -983,39 +984,75 @@ app.get("/verify/slack/:token", async (req, res) => {
 // ============================================================
 
 /**
- * Login to Peloton and get session credentials
+ * Login to Peloton using headless browser to bypass Cloudflare
  * @param {string} username - Peloton username or email
  * @param {string} password - Peloton password (never stored)
  * @returns {Promise<{session_id: string, user_id: string}>}
  */
 async function pelotonLogin(username, password) {
-  const resp = await fetch("https://api.onepeloton.com/auth/login", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept": "application/json, text/plain, */*",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Origin": "https://members.onepeloton.com",
-      "Referer": "https://members.onepeloton.com/",
-      "Peloton-Platform": "web",
-    },
-    body: JSON.stringify({
-      username_or_email: username,
-      password: password,
-    }),
-  });
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
 
-  const data = await resp.json();
+    const page = await browser.newPage();
 
-  if (!resp.ok || !data.session_id) {
-    throw new Error(data.message || `Peloton login failed (HTTP ${resp.status})`);
+    await page.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    await page.goto('https://auth.onepeloton.com/', { waitUntil: 'networkidle2' });
+
+    await page.waitForSelector('input[name="usernameOrEmail"]', { timeout: 15000 });
+    await page.type('input[name="usernameOrEmail"]', username, { delay: 50 });
+    await page.type('input[name="password"]', password, { delay: 50 });
+
+    await Promise.all([
+      page.click('button[type="submit"]'),
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+    ]);
+
+    await page.waitForFunction(
+      () => document.cookie.includes('peloton_session_id'),
+      { timeout: 15000 }
+    ).catch(() => {});
+
+    const cookies = await page.cookies();
+    const sessionCookie = cookies.find(c => c.name === 'peloton_session_id');
+
+    if (!sessionCookie) {
+      const errorText = await page.evaluate(() => {
+        const errorEl = document.querySelector('[class*="error"], [class*="Error"], .alert, .message');
+        return errorEl ? errorEl.textContent : null;
+      });
+      throw new Error(errorText || 'Login failed - could not get session. Check username/password.');
+    }
+
+    const session_id = sessionCookie.value;
+
+    const userResp = await page.evaluate(async (sid) => {
+      const res = await fetch('https://api.onepeloton.com/api/me', {
+        headers: { Cookie: `peloton_session_id=${sid}` },
+        credentials: 'include',
+      });
+      return res.json();
+    }, session_id);
+
+    if (!userResp.id) {
+      throw new Error('Could not fetch user ID after login');
+    }
+
+    return {
+      session_id,
+      user_id: userResp.id,
+    };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
-
-  return {
-    session_id: data.session_id,
-    user_id: data.user_id,
-  };
 }
 
 /**
