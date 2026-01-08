@@ -1254,7 +1254,7 @@ app.get("/auth/peloton/start", async (req, res) => {
               <li>Log into <a href="https://members.onepeloton.com" target="_blank" style="color: #2563eb;">members.onepeloton.com</a> in your browser</li>
               <li>Open Developer Tools (F12 or Cmd+Option+I)</li>
               <li>Go to <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>members.onepeloton.com</strong></li>
-              <li>Find <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;">peloton_session_id</code> and copy its value</li>
+              <li>Find <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;color:#1e293b;">peloton_session_id</code> and copy its value</li>
             </ol>
             <p style="margin-top: 12px; padding: 10px; background: #fef3c7; border-radius: 6px; color: #92400e; font-size: 0.9em;">
               <strong>Tip:</strong> Stay logged into members.onepeloton.com to keep your session active. Sessions typically last weeks to months, but logging out will invalidate it. If it expires, we'll send you a Slack DM to reconnect.
