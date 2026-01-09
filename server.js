@@ -1479,8 +1479,18 @@ app.post("/peloton/poll", requireAdminAuth, async (req, res) => {
             created_at: new Date(details.created_at * 1000).toISOString(),
             already_posted: alreadyPosted,
             distance: extractPelotonDistance(details),
+            // Dump all top-level keys to see what's available
+            available_keys: Object.keys(details),
+            // Check various possible distance locations
             raw_overall_summary: details.overall_summary,
-            raw_summaries: details.summaries
+            raw_summaries: details.summaries,
+            raw_total_work: details.total_work,
+            raw_distance: details.distance,
+            raw_ride_distance: details.ride?.distance,
+            raw_metrics: details.metrics,
+            raw_workout_metrics: details.workout_metrics,
+            // Include full details for first workout only (to keep response manageable)
+            full_raw: workoutDetails.length === 0 ? details : undefined
           });
         }
 
