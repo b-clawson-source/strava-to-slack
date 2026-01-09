@@ -1079,26 +1079,55 @@ async function getPelotonWorkoutDetails(session_id, workout_id) {
 }
 
 /**
- * Extract distance in miles from a Peloton workout
- * @param {Object} workout - Workout object from Peloton API
- * @returns {number|null} - Distance in miles, or null if no distance
+ * Fetch performance metrics for a Peloton workout (includes distance)
+ * @param {string} session_id - Peloton session cookie
+ * @param {string} workout_id - Workout ID
+ * @returns {Object} - Performance data with summaries and metrics
  */
-function extractPelotonDistance(workout) {
-  // Peloton stores metrics in different places depending on workout type
-  // Check overall_summary first, then summaries array
-  const summary = workout.overall_summary || workout;
+async function getPelotonWorkoutPerformance(session_id, workout_id) {
+  const resp = await fetch(
+    `https://api.onepeloton.com/api/workout/${workout_id}/performance_graph?every_n=1`,
+    {
+      headers: {
+        Cookie: `peloton_session_id=${session_id}`,
+      },
+    }
+  );
 
-  // Distance is typically in miles for US users
-  if (summary.distance !== undefined && summary.distance > 0) {
-    return summary.distance;
+  if (resp.status === 401) {
+    const error = new Error("Peloton session expired");
+    error.code = "SESSION_EXPIRED";
+    throw error;
   }
 
-  // Some workouts have distance in summaries array
-  if (workout.summaries) {
-    const distanceSummary = workout.summaries.find(s => s.slug === "distance");
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    throw new Error(data.message || "Failed to fetch Peloton workout performance");
+  }
+
+  return data;
+}
+
+/**
+ * Extract distance in miles from Peloton performance data
+ * @param {Object} performance - Performance data from /performance_graph endpoint
+ * @returns {number|null} - Distance in miles, or null if no distance
+ */
+function extractPelotonDistance(performance) {
+  if (!performance) return null;
+
+  // Performance data has summaries array with distance
+  if (performance.summaries) {
+    const distanceSummary = performance.summaries.find(s => s.slug === "distance");
     if (distanceSummary && distanceSummary.value > 0) {
       return distanceSummary.value;
     }
+  }
+
+  // Also check overall_summary if present
+  if (performance.overall_summary?.distance > 0) {
+    return performance.overall_summary.distance;
   }
 
   return null;
@@ -1150,8 +1179,8 @@ async function notifySessionExpired(conn) {
 /**
  * Post a Peloton workout to Slack
  */
-async function slackPostPelotonActivity(workout, conn) {
-  const distance = extractPelotonDistance(workout);
+async function slackPostPelotonActivity(workout, conn, performance) {
+  const distance = extractPelotonDistance(performance);
   if (!distance) return null; // Skip workouts without distance
 
   const pedometerUserId = process.env.FETCH_PEDOMETER_USER_ID;
@@ -1471,6 +1500,7 @@ app.post("/peloton/poll", requireAdminAuth, async (req, res) => {
 
         for (const w of workouts.slice(0, 3)) { // Only check first 3 for debugging
           const details = await getPelotonWorkoutDetails(fullConn.session_id, w.id);
+          const performance = await getPelotonWorkoutPerformance(fullConn.session_id, w.id);
           const alreadyPosted = await wasPelotonWorkoutPosted(w.id);
           workoutDetails.push({
             id: w.id,
@@ -1478,19 +1508,11 @@ app.post("/peloton/poll", requireAdminAuth, async (req, res) => {
             fitness_discipline: details.fitness_discipline,
             created_at: new Date(details.created_at * 1000).toISOString(),
             already_posted: alreadyPosted,
-            distance: extractPelotonDistance(details),
-            // Dump all top-level keys to see what's available
-            available_keys: Object.keys(details),
-            // Check various possible distance locations
-            raw_overall_summary: details.overall_summary,
-            raw_summaries: details.summaries,
-            raw_total_work: details.total_work,
-            raw_distance: details.distance,
-            raw_ride_distance: details.ride?.distance,
-            raw_metrics: details.metrics,
-            raw_workout_metrics: details.workout_metrics,
-            // Include full details for first workout only (to keep response manageable)
-            full_raw: workoutDetails.length === 0 ? details : undefined
+            distance: extractPelotonDistance(performance),
+            // Performance data (where distance lives)
+            performance_summaries: performance.summaries,
+            // Basic workout info
+            total_work: details.total_work
           });
         }
 
@@ -1545,19 +1567,17 @@ async function pollPelotonUser(conn) {
           continue;
         }
 
-        // Get full workout details
+        // Get full workout details and performance metrics
         const workout = await getPelotonWorkoutDetails(conn.session_id, workoutSummary.id);
+        const performance = await getPelotonWorkoutPerformance(conn.session_id, workoutSummary.id);
         console.log(`[Peloton] Workout ${workoutSummary.id} details:`, {
           fitness_discipline: workout.fitness_discipline,
           title: workout.ride?.title || workout.title,
-          has_overall_summary: !!workout.overall_summary,
-          overall_summary_distance: workout.overall_summary?.distance,
-          summaries_count: workout.summaries?.length,
-          summaries: workout.summaries?.map(s => ({ slug: s.slug, value: s.value }))
+          performance_summaries: performance.summaries?.map(s => ({ slug: s.slug, value: s.value }))
         });
 
-        // Check if workout has distance
-        const distance = extractPelotonDistance(workout);
+        // Check if workout has distance (from performance data)
+        const distance = extractPelotonDistance(performance);
         if (!distance) {
           console.log(`[Peloton] Workout ${workoutSummary.id} has no distance, skipping`);
           result.skipped++;
@@ -1566,8 +1586,8 @@ async function pollPelotonUser(conn) {
 
         console.log(`[Peloton] Posting workout ${workoutSummary.id} with distance ${distance}`);
 
-        // Post to Slack
-        await slackPostPelotonActivity(workout, conn);
+        // Post to Slack (pass both workout and performance data)
+        await slackPostPelotonActivity(workout, conn, performance);
 
         // Mark as posted
         await markPelotonWorkoutPosted(workoutSummary.id, conn.slack_user_id);
