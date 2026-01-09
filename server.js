@@ -1444,6 +1444,71 @@ app.delete("/peloton/connections/:peloton_user_id", requireAdminAuth, async (req
   }
 });
 
+/**
+ * Debug endpoint - manually trigger Peloton poll and see raw results
+ */
+app.post("/peloton/poll", requireAdminAuth, async (req, res) => {
+  console.log("[Peloton] Manual poll triggered via API");
+  try {
+    const connections = await listPelotonConnections();
+    const results = [];
+
+    for (const conn of connections) {
+      const fullConn = await getPelotonConnection(conn.peloton_user_id);
+      if (!fullConn || !fullConn.session_id) {
+        results.push({
+          peloton_user_id: conn.peloton_user_id,
+          status: "skipped",
+          reason: "no session_id"
+        });
+        continue;
+      }
+
+      // Get raw workouts for debugging
+      try {
+        const workouts = await getPelotonWorkouts(fullConn.session_id, fullConn.peloton_user_id);
+        const workoutDetails = [];
+
+        for (const w of workouts.slice(0, 3)) { // Only check first 3 for debugging
+          const details = await getPelotonWorkoutDetails(fullConn.session_id, w.id);
+          const alreadyPosted = await wasPelotonWorkoutPosted(w.id);
+          workoutDetails.push({
+            id: w.id,
+            title: details.ride?.title || details.title,
+            fitness_discipline: details.fitness_discipline,
+            created_at: new Date(details.created_at * 1000).toISOString(),
+            already_posted: alreadyPosted,
+            distance: extractPelotonDistance(details),
+            raw_overall_summary: details.overall_summary,
+            raw_summaries: details.summaries
+          });
+        }
+
+        results.push({
+          peloton_user_id: conn.peloton_user_id,
+          username: fullConn.username,
+          slack_user_id: fullConn.slack_user_id,
+          status: "ok",
+          total_workouts_found: workouts.length,
+          recent_workouts: workoutDetails
+        });
+      } catch (err) {
+        results.push({
+          peloton_user_id: conn.peloton_user_id,
+          status: "error",
+          error: err.message,
+          code: err.code
+        });
+      }
+    }
+
+    res.json({ ok: true, connections_count: connections.length, results });
+  } catch (err) {
+    console.error("[Peloton] Manual poll error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ============================================================
 // PELOTON POLLING LOOP
 // ============================================================
@@ -1454,27 +1519,42 @@ app.delete("/peloton/connections/:peloton_user_id", requireAdminAuth, async (req
 async function pollPelotonUser(conn) {
   const result = { posted: 0, skipped: 0, errors: 0 };
 
+  console.log(`[Peloton] Polling user ${conn.peloton_user_id} (Slack: ${conn.slack_user_id})`);
+
   try {
     // Fetch recent workouts
     const workouts = await getPelotonWorkouts(conn.session_id, conn.peloton_user_id);
+    console.log(`[Peloton] Found ${workouts.length} recent workouts for user ${conn.peloton_user_id}`);
 
     for (const workoutSummary of workouts) {
       try {
         // Check idempotency
         if (await wasPelotonWorkoutPosted(workoutSummary.id)) {
+          console.log(`[Peloton] Workout ${workoutSummary.id} already posted, skipping`);
           result.skipped++;
           continue;
         }
 
         // Get full workout details
         const workout = await getPelotonWorkoutDetails(conn.session_id, workoutSummary.id);
+        console.log(`[Peloton] Workout ${workoutSummary.id} details:`, {
+          fitness_discipline: workout.fitness_discipline,
+          title: workout.ride?.title || workout.title,
+          has_overall_summary: !!workout.overall_summary,
+          overall_summary_distance: workout.overall_summary?.distance,
+          summaries_count: workout.summaries?.length,
+          summaries: workout.summaries?.map(s => ({ slug: s.slug, value: s.value }))
+        });
 
         // Check if workout has distance
         const distance = extractPelotonDistance(workout);
         if (!distance) {
+          console.log(`[Peloton] Workout ${workoutSummary.id} has no distance, skipping`);
           result.skipped++;
           continue;
         }
+
+        console.log(`[Peloton] Posting workout ${workoutSummary.id} with distance ${distance}`);
 
         // Post to Slack
         await slackPostPelotonActivity(workout, conn);
@@ -1482,20 +1562,23 @@ async function pollPelotonUser(conn) {
         // Mark as posted
         await markPelotonWorkoutPosted(workoutSummary.id, conn.slack_user_id);
         result.posted++;
+        console.log(`[Peloton] Successfully posted workout ${workoutSummary.id}`);
       } catch (workoutErr) {
-        console.error(`Error processing workout ${workoutSummary.id}:`, workoutErr);
+        console.error(`[Peloton] Error processing workout ${workoutSummary.id}:`, workoutErr);
         result.errors++;
       }
     }
   } catch (err) {
     if (err.code === "SESSION_EXPIRED") {
+      console.log(`[Peloton] Session expired for user ${conn.peloton_user_id}`);
       await notifySessionExpired(conn);
     } else {
-      console.error(`Error polling Peloton user ${conn.peloton_user_id}:`, err);
+      console.error(`[Peloton] Error polling user ${conn.peloton_user_id}:`, err);
     }
     result.errors++;
   }
 
+  console.log(`[Peloton] Poll complete for ${conn.peloton_user_id}: posted=${result.posted}, skipped=${result.skipped}, errors=${result.errors}`);
   return result;
 }
 
@@ -1503,18 +1586,24 @@ async function pollPelotonUser(conn) {
  * Main Peloton polling function - polls all connected users
  */
 async function pollAllPelotonUsers() {
+  console.log("[Peloton] Starting poll cycle...");
   try {
     const connections = await listPelotonConnections();
+    console.log(`[Peloton] Found ${connections.length} Peloton connections to poll`);
     if (connections.length === 0) return;
 
     for (const conn of connections) {
       const fullConn = await getPelotonConnection(conn.peloton_user_id);
-      if (!fullConn || !fullConn.session_id) continue;
+      if (!fullConn || !fullConn.session_id) {
+        console.log(`[Peloton] Connection ${conn.peloton_user_id} has no session_id, skipping`);
+        continue;
+      }
       await pollPelotonUser(fullConn);
     }
   } catch (err) {
-    console.error("Peloton poll error:", err);
+    console.error("[Peloton] Poll cycle error:", err);
   }
+  console.log("[Peloton] Poll cycle complete");
 }
 
 /**
