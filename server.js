@@ -1573,8 +1573,16 @@ async function pollPelotonUser(conn) {
         console.log(`[Peloton] Workout ${workoutSummary.id} details:`, {
           fitness_discipline: workout.fitness_discipline,
           title: workout.ride?.title || workout.title,
+          status: workout.status,
           performance_summaries: performance.summaries?.map(s => ({ slug: s.slug, value: s.value }))
         });
+
+        // Skip workouts that aren't complete (avoid posting mid-workout)
+        if (workout.status !== "COMPLETE") {
+          console.log(`[Peloton] Workout ${workoutSummary.id} status is "${workout.status}", skipping (not complete)`);
+          result.skipped++;
+          continue;
+        }
 
         // Check if workout has distance (from performance data)
         const distance = extractPelotonDistance(performance);
