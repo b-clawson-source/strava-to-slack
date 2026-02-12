@@ -255,7 +255,7 @@ export async function getConnection(athlete_id) {
 export async function listConnections() {
   if (usePostgres) {
     const result = await pool.query(
-      `SELECT athlete_id, athlete_firstname, athlete_lastname, slack_user_id, updated_at
+      `SELECT athlete_id, athlete_firstname, athlete_lastname, slack_user_id, verified, updated_at
        FROM strava_connections
        ORDER BY updated_at DESC`
     );
@@ -263,7 +263,7 @@ export async function listConnections() {
   } else {
     return new Promise((resolve, reject) => {
       db.all(
-        `SELECT athlete_id, athlete_firstname, athlete_lastname, slack_user_id, updated_at FROM strava_connections ORDER BY updated_at DESC`,
+        `SELECT athlete_id, athlete_firstname, athlete_lastname, slack_user_id, verified, updated_at FROM strava_connections ORDER BY updated_at DESC`,
         [],
         (err, rows) => (err ? reject(err) : resolve(rows || []))
       );

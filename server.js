@@ -1,7 +1,16 @@
 import express from "express";
 import "dotenv/config";
-import fetch from "node-fetch";
+import nodeFetch from "node-fetch";
 import polyline from "@mapbox/polyline";
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30000; // 30 seconds
+
+function fetch(url, options = {}) {
+  const timeoutMs = options.timeout || DEFAULT_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return nodeFetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
 import {
   upsertConnection,
   listConnections,
@@ -1630,7 +1639,11 @@ async function pollPelotonUser(conn) {
   } catch (err) {
     if (err.code === "SESSION_EXPIRED") {
       console.log(`[Peloton] Session expired for user ${conn.peloton_user_id}`);
-      await notifySessionExpired(conn);
+      try {
+        await notifySessionExpired(conn);
+      } catch (notifyErr) {
+        console.error(`[Peloton] Failed to send session expiry notification for ${conn.peloton_user_id}:`, notifyErr.message);
+      }
     } else {
       console.error(`[Peloton] Error polling user ${conn.peloton_user_id}:`, err);
     }
