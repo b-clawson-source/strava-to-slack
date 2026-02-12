@@ -29,6 +29,12 @@ import {
 import crypto from "crypto";
 
 const app = express();
+
+// Polling health tracking
+const pollingHealth = {
+  strava: { lastWebhookReceived: null, lastActivityPosted: null, webhooksReceived: 0, activitiesPosted: 0 },
+  peloton: { lastPollStart: null, lastPollEnd: null, lastActivityPosted: null, pollCount: 0, consecutiveErrors: 0, activitiesPosted: 0 },
+};
 // Parse JSON bodies (only for application/json content-type)
 app.use(express.json({ type: "application/json" }));
 // Parse URL-encoded bodies (for HTML form submissions)
@@ -482,6 +488,21 @@ async function getStravaActivity(access_token, activityId) {
     throw new Error(`Strava get activity failed: ${JSON.stringify(data)}`);
   }
 
+  return data;
+}
+
+async function slackPostDM(slackUserId, text) {
+  const token = process.env.SLACK_BOT_TOKEN;
+  const resp = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ channel: slackUserId, text }),
+  });
+  const data = await resp.json();
+  if (!data.ok) throw new Error(`Slack DM failed: ${data.error}`);
   return data;
 }
 
@@ -1624,6 +1645,8 @@ async function pollPelotonUser(conn) {
  * Main Peloton polling function - polls all connected users
  */
 async function pollAllPelotonUsers() {
+  pollingHealth.peloton.lastPollStart = new Date().toISOString();
+  pollingHealth.peloton.pollCount++;
   console.log("[Peloton] Starting poll cycle...");
   try {
     const connections = await listPelotonConnections();
@@ -1636,11 +1659,18 @@ async function pollAllPelotonUsers() {
         console.log(`[Peloton] Connection ${conn.peloton_user_id} has no session_id, skipping`);
         continue;
       }
-      await pollPelotonUser(fullConn);
+      const result = await pollPelotonUser(fullConn);
+      if (result.posted > 0) {
+        pollingHealth.peloton.lastActivityPosted = new Date().toISOString();
+        pollingHealth.peloton.activitiesPosted += result.posted;
+      }
     }
+    pollingHealth.peloton.consecutiveErrors = 0;
   } catch (err) {
+    pollingHealth.peloton.consecutiveErrors++;
     console.error("[Peloton] Poll cycle error:", err);
   }
+  pollingHealth.peloton.lastPollEnd = new Date().toISOString();
   console.log("[Peloton] Poll cycle complete");
 }
 
@@ -1659,6 +1689,31 @@ function startPelotonPoller() {
   // Then run on interval
   setInterval(pollAllPelotonUsers, intervalMs);
 }
+
+/**
+ * Health check endpoint — shows polling status for both Strava and Peloton
+ */
+app.get("/health", async (req, res) => {
+  try {
+    const stravaConns = await listConnections();
+    const pelotonConns = await listPelotonConnections();
+    res.json({
+      ok: true,
+      uptime: process.uptime(),
+      strava: {
+        ...pollingHealth.strava,
+        totalConnections: stravaConns.length,
+        verifiedConnections: stravaConns.filter(c => c.verified).length,
+      },
+      peloton: {
+        ...pollingHealth.peloton,
+        totalConnections: pelotonConns.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 /**
  * DEBUG: Check verified slack users table
@@ -1750,6 +1805,47 @@ app.post("/connections/:athlete_id/slack", requireAdminAuth, async (req, res) =>
   }
 });
 
+/**
+ * Check the current Strava webhook subscription status
+ */
+app.get("/debug/strava-subscription", requireAdminAuth, async (req, res) => {
+  try {
+    const resp = await fetch(
+      `https://www.strava.com/api/v3/push_subscriptions?client_id=${process.env.STRAVA_CLIENT_ID}&client_secret=${process.env.STRAVA_CLIENT_SECRET}`
+    );
+    const data = await resp.json();
+    res.json({ ok: true, subscriptions: data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * Re-register the Strava webhook subscription
+ */
+app.post("/debug/strava-subscription", requireAdminAuth, async (req, res) => {
+  try {
+    const callbackUrl = `${process.env.PUBLIC_BASE_URL}/strava/webhook`;
+    const resp = await fetch("https://www.strava.com/api/v3/push_subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: process.env.STRAVA_CLIENT_ID,
+        client_secret: process.env.STRAVA_CLIENT_SECRET,
+        callback_url: callbackUrl,
+        verify_token: process.env.STRAVA_VERIFY_TOKEN,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      return res.status(resp.status).json({ ok: false, error: data });
+    }
+    res.json({ ok: true, subscription: data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get("/strava/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -1768,24 +1864,54 @@ app.post("/strava/webhook", async (req, res) => {
 
   try {
     const event = req.body;
+    pollingHealth.strava.lastWebhookReceived = new Date().toISOString();
+    pollingHealth.strava.webhooksReceived++;
+    console.log(`[Strava] Webhook received:`, JSON.stringify(event));
 
     // Only care about newly created activities
-    if (event?.object_type !== "activity" || event?.aspect_type !== "create") return;
+    if (event?.object_type !== "activity" || event?.aspect_type !== "create") {
+      console.log(`[Strava] Ignoring event: object_type=${event?.object_type}, aspect_type=${event?.aspect_type}`);
+      return;
+    }
 
     const activityId = event.object_id;
     const athleteId = event.owner_id;
+    console.log(`[Strava] Processing activity ${activityId} for athlete ${athleteId}`);
 
     // Idempotency: don't double-post
-    if (await wasActivityPosted(activityId)) return;
+    if (await wasActivityPosted(activityId)) {
+      console.log(`[Strava] Activity ${activityId} already posted, skipping`);
+      return;
+    }
 
     const conn = await getConnection(athleteId);
-    if (!conn) return;
+    if (!conn) {
+      console.log(`[Strava] No connection found for athlete ${athleteId} — they may need to re-authorize`);
+      return;
+    }
 
     // Check if user has verified their Slack account
-    if (conn.slack_user_id && !conn.verified) return;
+    if (conn.slack_user_id && !conn.verified) {
+      console.log(`[Strava] Athlete ${athleteId} (${conn.athlete_firstname} ${conn.athlete_lastname}) is not verified, skipping`);
+      return;
+    }
 
     // Refresh token (Strava may rotate refresh_token)
-    const refreshed = await refreshStravaToken(conn.refresh_token);
+    let refreshed;
+    try {
+      refreshed = await refreshStravaToken(conn.refresh_token);
+    } catch (tokenErr) {
+      console.error(`[Strava] Token refresh failed for athlete ${athleteId} (${conn.athlete_firstname} ${conn.athlete_lastname}):`, tokenErr.message);
+      // Notify the user via Slack DM that their token is broken
+      if (conn.slack_user_id) {
+        try {
+          await slackPostDM(conn.slack_user_id, `Your Strava connection has expired. Please re-authorize at ${process.env.PUBLIC_BASE_URL}/auth/strava/start to continue posting activities.`);
+        } catch (dmErr) {
+          console.error(`[Strava] Failed to send token expiry DM to ${conn.slack_user_id}:`, dmErr.message);
+        }
+      }
+      return;
+    }
 
     await upsertConnection({
       athlete_id: athleteId,
@@ -1798,15 +1924,22 @@ app.post("/strava/webhook", async (req, res) => {
 
     // Fetch activity details
     const activity = await getStravaActivity(refreshed.access_token, activityId);
+    console.log(`[Strava] Activity ${activityId}: type=${activity.type}, name="${activity.name}"`);
 
     // Only runs
-    if (activity.type !== "Run") return;
+    if (activity.type !== "Run") {
+      console.log(`[Strava] Activity ${activityId} is type "${activity.type}", skipping (only runs)`);
+      return;
+    }
 
     // Post activity with map image (or without if no map available)
     await slackPostActivityWithMap(activity, conn);
     await markActivityPosted(activityId, athleteId);
+    pollingHealth.strava.lastActivityPosted = new Date().toISOString();
+    pollingHealth.strava.activitiesPosted++;
+    console.log(`[Strava] Successfully posted activity ${activityId} for ${conn.athlete_firstname} ${conn.athlete_lastname}`);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("[Strava] Webhook error:", err);
   }
 });
 
