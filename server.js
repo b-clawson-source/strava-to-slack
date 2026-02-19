@@ -436,7 +436,7 @@ app.post("/test/map-dm", requireAdminAuth, async (req, res) => {
     res.json({ ok: true, map_url: mapUrl, slack_response: dmData });
   } catch (err) {
     console.error("Map test error:", err);
-    res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
@@ -840,6 +840,35 @@ app.get("/verify/:token", async (req, res) => {
 // STANDALONE SLACK VERIFICATION (for Peloton users without Strava)
 // ============================================================
 
+// Rate limiter: max 3 verification requests per Slack ID per 15 minutes
+const verifyRateLimit = new Map();
+const VERIFY_RATE_LIMIT_MAX = 3;
+const VERIFY_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+
+function checkVerifyRateLimit(slackUserId) {
+  const now = Date.now();
+  const entry = verifyRateLimit.get(slackUserId);
+  if (!entry) {
+    verifyRateLimit.set(slackUserId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (now - entry.windowStart > VERIFY_RATE_LIMIT_WINDOW_MS) {
+    verifyRateLimit.set(slackUserId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= VERIFY_RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
+
+// Clean up stale rate limit entries every 30 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of verifyRateLimit) {
+    if (now - entry.windowStart > VERIFY_RATE_LIMIT_WINDOW_MS) verifyRateLimit.delete(key);
+  }
+}, 30 * 60 * 1000);
+
 /**
  * Start standalone Slack verification
  * POST /verify/slack/start
@@ -859,6 +888,24 @@ app.post("/verify/slack/start", async (req, res) => {
             <div style="font-size:3rem;margin-bottom:16px;">⚠️</div>
             <h1>Invalid Slack ID</h1>
             <p class="subtitle">Please enter a valid Slack Member ID<br>(starts with U followed by letters/numbers).</p>
+            <a href="/" class="btn-back">← Go back</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    // Rate limit check
+    if (!checkVerifyRateLimit(slackUserId)) {
+      return res.status(429).send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><title>Too Many Requests</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sharedStyles}</style></head>
+        <body>
+          <div class="container" style="text-align:center;">
+            <div style="font-size:3rem;margin-bottom:16px;">⏳</div>
+            <h1>Too Many Requests</h1>
+            <p class="subtitle">Please wait a few minutes before requesting another verification link.</p>
             <a href="/" class="btn-back">← Go back</a>
           </div>
         </body>
@@ -1466,14 +1513,14 @@ app.post("/auth/peloton/login", async (req, res) => {
       </head>
       <body>
         <div class="container">
-          <h1>Peloton Login Failed</h1>
+          <h1>Peloton Connection Failed</h1>
           <p class="subtitle">We couldn't connect to your Peloton account.</p>
           <div class="error-box">
             <p><strong>Error:</strong> ${err.message}</p>
           </div>
           <div class="card">
-            <p>Please check your username and password and try again.</p>
-            <p class="note">If you use two-factor authentication, make sure to include the code.</p>
+            <p>Please check that your session ID is correct and hasn't expired, then try again.</p>
+            <p class="note">Session IDs expire if you log out of Peloton. Get a fresh one from your browser's dev tools.</p>
           </div>
           <a href="/auth/peloton/start?slack_user_id=${slackUserId}" class="btn-back">← Try again</a>
         </div>
@@ -1657,14 +1704,20 @@ async function pollPelotonUser(conn) {
 /**
  * Main Peloton polling function - polls all connected users
  */
+let pelotonPollInProgress = false;
+
 async function pollAllPelotonUsers() {
+  if (pelotonPollInProgress) {
+    console.log("[Peloton] Poll already in progress, skipping this cycle");
+    return;
+  }
+  pelotonPollInProgress = true;
   pollingHealth.peloton.lastPollStart = new Date().toISOString();
   pollingHealth.peloton.pollCount++;
   console.log("[Peloton] Starting poll cycle...");
   try {
     const connections = await listPelotonConnections();
     console.log(`[Peloton] Found ${connections.length} Peloton connections to poll`);
-    if (connections.length === 0) return;
 
     for (const conn of connections) {
       const fullConn = await getPelotonConnection(conn.peloton_user_id);
@@ -1682,9 +1735,11 @@ async function pollAllPelotonUsers() {
   } catch (err) {
     pollingHealth.peloton.consecutiveErrors++;
     console.error("[Peloton] Poll cycle error:", err);
+  } finally {
+    pollingHealth.peloton.lastPollEnd = new Date().toISOString();
+    pelotonPollInProgress = false;
+    console.log("[Peloton] Poll cycle complete");
   }
-  pollingHealth.peloton.lastPollEnd = new Date().toISOString();
-  console.log("[Peloton] Poll cycle complete");
 }
 
 /**
@@ -1731,7 +1786,7 @@ app.get("/health", async (req, res) => {
 /**
  * DEBUG: Check verified slack users table
  */
-app.get("/debug/verified-users", async (req, res) => {
+app.get("/debug/verified-users", requireAdminAuth, async (req, res) => {
   try {
     const users = await listVerifiedSlackUsers();
     res.json({ ok: true, count: users.length, users });
@@ -1741,11 +1796,16 @@ app.get("/debug/verified-users", async (req, res) => {
 });
 
 /**
- * DEBUG: Check your connection status (temporary endpoint)
+ * DEBUG: Check a connection status
+ * Usage: GET /debug/connection?athlete_id=19826530
  */
-app.get("/debug/my-connection", async (req, res) => {
+app.get("/debug/connection", requireAdminAuth, async (req, res) => {
   try {
-    const athleteId = 19826530; // Your athlete ID
+    const athleteId = parseInt(req.query.athlete_id, 10);
+    if (!athleteId) {
+      return res.status(400).json({ ok: false, error: "Missing athlete_id query parameter" });
+    }
+
     const conn = await getConnection(athleteId);
 
     if (!conn) {
